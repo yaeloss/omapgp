@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title description">
+  <title id="title">omaPGP — Encrypt, decrypt, sign from the Omarchy bar</title>
+  <desc id="description">A dark navy and amber project card matching the omuseful card family. The right-hand panel is an illustration with a fictional contact, synthetic fingerprint, and example message, not a screenshot of a real keyring.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#10171c"/>
+      <stop offset="1" stop-color="#1e2a33"/>
+    </linearGradient>
+    <g id="lock">
+      <path d="M22 29v-6a10 10 0 0 1 20 0v6" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round"/>
+      <rect x="16" y="29" width="32" height="22" rx="4" fill="currentColor"/>
+      <circle cx="32" cy="38" r="3.5" fill="#141d23"/>
+      <rect x="30.5" y="39" width="3" height="7" rx="1.5" fill="#141d23"/>
+    </g>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#background)"/>
+
+  <!-- Original omaPGP mark and editable type. Fonts are not bundled. -->
+  <g font-family="JetBrainsMono Nerd Font, JetBrains Mono, monospace">
+    <use href="#lock" transform="translate(54 78) scale(2.8)" color="#ffb86c"/>
+    <text x="92" y="330" fill="#e9e6df" font-size="96" font-weight="700" letter-spacing="-2">omaPGP</text>
+    <g fill="#e9e6df" font-size="32">
+      <text x="92" y="400">Encrypt, decrypt, sign</text>
+      <text x="92" y="446">from the Omarchy bar</text>
+    </g>
+    <g fill="#ffb86c" font-size="25">
+      <text x="92" y="530">Your keys. Your computer.</text>
+      <text x="92" y="566">Powered by GnuPG.</text>
+    </g>
+  </g>
+
+  <!-- Illustrative Read panel. Every identity, packet, and message is synthetic. -->
+  <g font-family="JetBrainsMono Nerd Font, JetBrains Mono, monospace">
+    <rect x="804" y="41" width="396" height="558" fill="#161f26" stroke="#ffb86c" stroke-width="2"/>
+    <use href="#lock" transform="translate(815 58) scale(.48)" color="#e9e6df"/>
+    <text x="851" y="79" fill="#e9e6df" font-size="17" font-weight="700">omaPGP</text>
+    <text x="821" y="104" fill="#a7a7a0" font-size="10">Local only · ~/.gnupg</text>
+
+    <rect x="1004" y="61" width="52" height="29" rx="5" fill="#323b40" stroke="#c29461" stroke-width=".8"/>
+    <text x="1030" y="80" text-anchor="middle" fill="#ffb86c" font-size="12">Read</text>
+    <text x="1086" y="80" text-anchor="middle" fill="#c8c7c0" font-size="12">Write</text>
+    <text x="1146" y="80" text-anchor="middle" fill="#c8c7c0" font-size="12">Keys</text>
+    <path d="M820 119H1184" stroke="#53534e" stroke-width="1"/>
+
+    <rect x="820" y="136" width="364" height="111" rx="5" fill="#1e282f" stroke="#6c6456"/>
+    <g fill="#b8bebd" font-size="11">
+      <text x="834" y="160">-----BEGIN PGP MESSAGE-----</text>
+      <text x="834" y="182">hF4D…example ciphertext…</text>
+      <text x="834" y="203">…encrypted message…</text>
+      <text x="834" y="229">-----END PGP MESSAGE-----</text>
+    </g>
+
+    <rect x="820" y="262" width="168" height="31" rx="5" fill="#30383d" stroke="#a38969"/>
+    <text x="904" y="282" text-anchor="middle" fill="#ece8df" font-size="12">Decrypt / Verify</text>
+    <rect x="1001" y="262" width="78" height="31" rx="5" fill="#252e35" stroke="#65645d"/>
+    <text x="1040" y="282" text-anchor="middle" fill="#d3d2c9" font-size="12">Paste</text>
+    <rect x="1092" y="262" width="92" height="31" rx="5" fill="#252e35" stroke="#65645d"/>
+    <text x="1138" y="282" text-anchor="middle" fill="#d3d2c9" font-size="12">Clear</text>
+
+    <g fill="#e9e6df" font-size="12">
+      <path d="M824 316v-4a4 4 0 0 1 8 0" fill="none" stroke="#e9e6df" stroke-width="1.5" stroke-linecap="round"/>
+      <rect x="822" y="315" width="12" height="9" rx="1.5" fill="none" stroke="#e9e6df" stroke-width="1.5"/>
+      <text x="846" y="324">Decrypted</text>
+    </g>
+    <path d="M823 347l4 4 8-9" fill="none" stroke="#ffb86c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <g fill="#ffb86c" font-size="12">
+      <text x="846" y="351">Good signature from Alex</text>
+      <text x="846" y="370">(verified identity)</text>
+    </g>
+    <g fill="#aab2b2" font-size="10">
+      <text x="821" y="391">Fingerprint: 0123 4567 89AB CDEF 0123</text>
+      <text x="899" y="407">4567 89AB CDEF 0123 4567</text>
+    </g>
+
+    <rect x="820" y="424" width="364" height="91" rx="5" fill="#1e282f" stroke="#6c6456"/>
+    <g fill="#e9e6df" font-size="13">
+      <text x="834" y="451">See you at 18:00.</text>
+      <text x="834" y="475">I'll bring the coffee.</text>
+    </g>
+    <rect x="820" y="532" width="66" height="31" rx="5" fill="#252e35" stroke="#65645d"/>
+    <text x="853" y="552" text-anchor="middle" fill="#e9e6df" font-size="12">Copy</text>
+    <g fill="#9ca7a9" font-size="10">
+      <text x="899" y="545">Copied. Clipboard clears</text>
+      <text x="899" y="561">after 45 seconds.</text>
+    </g>
+
+    <text x="1002" y="620" text-anchor="middle" fill="#97a3aa" font-size="11">Illustrative UI · synthetic example</text>
+  </g>
+</svg>

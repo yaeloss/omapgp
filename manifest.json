@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.yaeloss.omapgp",
+  "name": "omaPGP",
+  "version": "0.1.1",
+  "author": "Yaël",
+  "license": "MIT",
+  "description": "Read, write, encrypt, decrypt, sign, and verify PGP text from the Omarchy bar using your local GnuPG keyring and bounded, pipe-only processing.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "omaPGP",
+    "description": "Encrypt, decrypt, sign, and verify PGP text with your local GnuPG keys.",
+    "category": "Security",
+    "aliases": [
+      "pgp",
+      "gpg",
+      "gnupg",
+      "openpgp",
+      "encrypt",
+      "decrypt",
+      "sign",
+      "verify"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "gnupgHome": "",
+      "copyClearSeconds": 45
+    },
+    "schema": [
+      {
+        "key": "gnupgHome",
+        "type": "string",
+        "label": "GnuPG home folder",
+        "defaultValue": "",
+        "description": "Leave blank to use your normal keyring (~/.gnupg). Set a folder, such as ~/.local/share/omapgp/gnupg, to keep a separate keyring just for omaPGP."
+      },
+      {
+        "key": "copyClearSeconds",
+        "type": "integer",
+        "label": "Clear copied plaintext after (seconds)",
+        "min": 0,
+        "max": 600,
+        "step": 5,
+        "defaultValue": 45,
+        "description": "After you copy a decrypted message, the clipboard is cleared after this many seconds if it still holds that text. Set 0 to never clear."
+      }
+    ]
+  },
+  "repository": "https://github.com/yaeloss/omapgp",
+  "homepage": "https://github.com/yaeloss/omapgp"
+}

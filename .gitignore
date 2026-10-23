@@ -1,0 +1,28 @@
+# Generated Python files and local environments (never install these as a plugin).
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local credentials and keyring experiments. Test keys are generated in /tmp.
+.env
+.env.*
+!.env.example
+.gnupg/
+gnupg/
+private-keys-v1.d/
+openpgp-revocs.d/
+/*.asc
+/*.gpg
+/*.kbx
+/*.key
+/*.pem
+
+# Editor, OS, and crash artifacts.
+.DS_Store
+*.swp
+*.swo
+*~
+core
+core.*
+*.core
