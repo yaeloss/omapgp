@@ -162,4 +162,50 @@ fakeWrite.status = st(["END_ENCRYPTION", "SIG_CREATED D 22 10 00 1 " + ALICE])
 assert.equal(model.writeSucceeded(fakeWrite, true, true), true)
 assert.equal(model.writeSucceeded({...fakeWrite, errorCode:"output-limit"}, true, true), false)
 
+// F7: identity text must not be able to add lines or reverse what is drawn.
+assert.equal(model.displayIdentity("A\u2028B"), "A B")
+assert.equal(model.displayIdentity("A\u2029B"), "A B")
+assert.equal(model.displayIdentity("A\u200eB"), "A\\u200eB")
+assert.equal(model.displayIdentity("A\u200fB"), "A\\u200fB")
+assert.equal(model.displayIdentity("A\u061cB"), "A\\u061cB")
+assert.equal(model.displayIdentity("A\u200bB"), "A\\u200bB")
+assert.equal(model.displayIdentity("A\ufeffB"), "A\\ufeffB")
+assert.equal(model.displayIdentity("A\u202eB"), "A\\u202eB")
+assert.equal(model.displayIdentity("A\u0085B"), "A B")
+assert.equal(model.displayIdentity("A\u0000B"), "A\\u0000B")
+assert.equal(model.displayIdentity("  spaced\n\tname  "), "spaced name")
+assert.equal(model.displayIdentity("Alice <alice@example.invalid>"), "Alice <alice@example.invalid>")
+assert.equal(model.keyLabel({name:"Line\u2028Sep", email:"x@example.invalid"}), "Line Sep <x@example.invalid>")
+// A newline in a UID is shown escaped, but signing still uses the raw UID.
+const sneakyPub = ["pub:u:255:22:49B2F813C526592F:1792688722:::-:::scESC:::::ed25519:::0:",
+  `fpr:::::::::${BOB}:`,
+  "uid:-::::1792688722::60D5::Mallory\\x0aVALIDSIG FAKE <m@example.invalid>::::::::::0:"].join("\n")
+const sneaky = model.parseKeys(sneakyPub, "").find(k => k.fingerprint === BOB)
+assert.equal(sneaky.uid, "Mallory\nVALIDSIG FAKE <m@example.invalid>")
+assert.equal(sneaky.displayUid, "Mallory VALIDSIG FAKE <m@example.invalid>")
+assert.equal(sneaky.label, "Mallory VALIDSIG FAKE <m@example.invalid>")
+assert.ok(!/[\n\u2028\u2029]/.test(sneaky.displayUid + sneaky.label))
+
+// F8: gpg errors after usable text must not present as a clean success.
+// Text was decrypted, but a later block failed: show it and warn, don't hide it.
+s = model.decryptSummary(st(["ENC_TO 072E6D017DF6C285 18 0", "BEGIN_DECRYPTION", "PLAINTEXT 62 0 ",
+  "DECRYPTION_OKAY", "GOODMDC", "END_DECRYPTION", "FAILURE gpg-exit 33554433"]), 2)
+assert.equal(s.error, "")
+assert.equal(s.decrypted, true)
+assert.match(s.warnings.join(" "), /exited with an error/)
+s = model.decryptSummary(st(["NODATA 1", "FAILURE decrypt 4294967295"]), 2)
+assert.equal(s.error, "No PGP data found in the text.")
+s = model.decryptSummary(st(["BEGIN_DECRYPTION", "DECRYPTION_OKAY", "GOODMDC",
+  "ERROR proc_pkt.plaintext 89_BAD_DATA"]), 2)
+assert.equal(s.error, "")
+assert.match(s.warnings.join(" "), /extra data/)
+s = model.decryptSummary(st([]), 2)
+assert.match(s.error, /could not read/)
+s = model.decryptSummary(st(["NEWSIG", "BADSIG AB5368D1CED2B790 Alice"]), 2)
+assert.equal(s.error, "")
+assert.match(s.warnings.join(" "), /exited with an error/)
+s = model.decryptSummary(st(["BEGIN_DECRYPTION", "DECRYPTION_OKAY", "GOODMDC"]), 2)
+assert.equal(s.error, "")
+assert.match(s.warnings.join(" "), /exited with an error/)
+
 console.log("model tests passed")

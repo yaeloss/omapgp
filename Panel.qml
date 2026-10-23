@@ -32,6 +32,7 @@ Panel {
   property string readError: ""
   property bool readHasResult: false
   property string readNotice: ""
+  property string copyNotice: ""
   property bool copyArmed: false
 
   // Write
@@ -58,6 +59,9 @@ Panel {
   property var verifyTarget: null
 
   readonly property string homedir: Model.expandHome(root.setting("gnupgHome", ""), Quickshell.env("HOME") || "")
+  // A relative folder would land inside the shell's working directory.
+  readonly property string homedirError: homedir !== "" && homedir.charAt(0) !== "/"
+    ? "The GnuPG home folder setting must be an absolute path, for example ~/.gnupg." : ""
   readonly property int copyClearSeconds: Math.max(0, Number(root.setting("copyClearSeconds", 45)) || 0)
   readonly property bool busy: gpg.running || keyList.running
   readonly property color fg: Color.popups.text
@@ -160,6 +164,7 @@ Panel {
     readError = ""
     readHasResult = false
     readNotice = ""
+    copyNotice = ""
     copyArmed = false
     if (readOutput) readOutput.clear()
   }
@@ -196,6 +201,10 @@ Panel {
 
   function runGpg(args, input, callback, kind) {
     if (!args || busy) return false
+    if (homedirError) {
+      callback({ exitCode: -1, stdout: "", status: [], errorCode: "homedir" })
+      return true
+    }
     if (input !== null && input !== undefined && Model.inputTooLarge(input)) {
       callback({ exitCode: -1, stdout: "", status: [], errorCode: "input-limit" })
       return true
@@ -212,6 +221,12 @@ Panel {
 
   function refreshKeys() {
     if (keyList.running) return
+    if (homedirError) {
+      root.keys = []
+      root.keysLoaded = false
+      root.keysError = homedirError
+      return
+    }
     var epoch = ++_keyEpoch
     root.keys = []
     root.keysLoaded = false
@@ -359,8 +374,8 @@ Panel {
     keysNotice = ""
     runGpg(Model.exportArgs(root.homedir, key.fingerprint), null, function(r) {
       if (r.exitCode === 0 && r.stdout.indexOf("-----BEGIN PGP PUBLIC KEY BLOCK-----") !== -1) {
-        clipboard.copy(r.stdout, false)
-        root.keysNotice = "Copied the public key for " + Model.keyLabel(key) + "."
+        if (clipboard.copy(r.stdout, false, "Copied the public key for " + Model.keyLabel(key) + "."))
+          root.keysNotice = "Copied the public key for " + Model.keyLabel(key) + "."
       } else {
         root.keysNotice = Model.workerFailure(r) || "Could not export that key."
       }
@@ -371,7 +386,7 @@ Panel {
     if (busy || !key || !key.uid) return
     keysNotice = ""
     var signWith = signer || (signKeys.length > 0 ? signKeys[0].fingerprint : "")
-    runGpg(Model.lsignArgs(root.homedir, key.fingerprint, signWith, key.uid), null, function(r) {
+    runGpg(Model.lsignArgs(root.homedir, key.fingerprint, signWith, key.displayUid || key.uid), null, function(r) {
       root.verifyTarget = null
       root.keysNotice = r.exitCode === 0
         ? Model.keyLabel(key) + " is now marked as verified on this computer."
@@ -380,20 +395,37 @@ Panel {
     })
   }
 
+  function copyTimeoutNotice(text) {
+    return root.copyClearSeconds > 0
+      ? text + " The clipboard will be cleared in " + root.copyClearSeconds + " seconds."
+      : text
+  }
+
   function copyPlaintext() {
     if (!copyArmed) { copyArmed = true; copyArmTimer.restart(); return }
     copyArmed = false
-    clipboard.copy(readPlaintext, true)
-    readNotice = copyClearSeconds > 0
-      ? "Copied. The clipboard will be cleared in " + copyClearSeconds + " seconds."
-      : "Copied."
+    copyNotice = ""
+    if (readPlaintext !== "" && !clipboard.copy(readPlaintext, true, copyTimeoutNotice("Copied the decrypted text.")))
+      copyNotice = "Another clipboard operation is still finishing. Try again in a moment."
   }
 
   function copyWriteOutput() {
     if (writeOutput === "") return
     if (writeOutputSensitive && !writeCopyArmed) { writeCopyArmed = true; copyArmTimer.restart(); return }
     writeCopyArmed = false
-    clipboard.copy(writeOutput, writeOutputSensitive)
+    var copied = writeOutputSensitive
+      ? clipboard.copy(writeOutput, true, copyTimeoutNotice("Copied the signed message."))
+      : clipboard.copy(writeOutput, false, "Copied the encrypted message.")
+    if (!copied) copyNotice = "Another clipboard operation is still finishing. Try again in a moment."
+  }
+
+  // Editors hold drafts and pasted keys, so their Copy/Cut use the same
+  // guarded path rather than the control's built-in clipboard action.
+  function copyEditorText(text, cut) {
+    if (text === "") return
+    copyNotice = ""
+    if (!clipboard.copy(text, true, copyTimeoutNotice(cut ? "Moved the selection to the clipboard." : "Copied the selection.")))
+      copyNotice = "Another clipboard operation is still finishing. Try again in a moment."
   }
 
   Timer {
@@ -411,28 +443,43 @@ Panel {
     id: keyList
   }
 
-  // Clipboard writes go through wl-copy's stdin. Decrypted text is marked
-  // sensitive and cleared after a delay if it is still on the clipboard.
+  // Clipboard writes go through wl-copy's stdin. Decrypted text, drafts and
+  // pasted keys are marked sensitive and cleared after a delay if the clipboard
+  // still holds them.
   Item {
     id: clipboard
+    objectName: "pgpClipboard"
+
+    property var calls: []
+    // Test hook: the QML harness records copies instead of touching the real
+    // desktop clipboard. Null in normal use.
+    property var override: null
 
     property string pendingHash: ""
+    property string pendingText: ""
+    property bool pendingSensitive: false
+    property string pendingNotice: ""
 
     function dropPayload() {
       copyProc.payload = ""
       if (copyProc.running) copyProc.running = false
+      pendingText = ""
+      pendingNotice = ""
+      pendingSensitive = false
     }
 
-    function copy(text, sensitive) {
+    function copy(text, sensitive, notice) {
+      if (text === "" || copyProc.running) return false
+      if (override) { override(text, sensitive, notice || ""); return true }
+      calls.push([text, sensitive, notice || ""])
       copyProc.payload = text
       copyProc.command = sensitive ? ["wl-copy", "--sensitive"] : ["wl-copy"]
       copyProc.stdinEnabled = true
+      clipboard.pendingText = text
+      clipboard.pendingSensitive = sensitive
+      clipboard.pendingNotice = notice || "Copied to the clipboard."
       copyProc.running = true
-      if (sensitive && root.copyClearSeconds > 0) {
-        clipboard.pendingHash = Qt.md5(text)
-        clearTimer.interval = root.copyClearSeconds * 1000
-        clearTimer.restart()
-      }
+      return true
     }
 
     Process {
@@ -442,6 +489,22 @@ Panel {
         write(payload)
         payload = ""
         stdinEnabled = false
+      }
+      // wl-copy forks on success, so a still-running process here is a failure.
+      onExited: {
+        if (exitCode === 0) {
+          root.copyNotice = clipboard.pendingNotice
+          if (clipboard.pendingSensitive && root.copyClearSeconds > 0) {
+            clipboard.pendingHash = Qt.md5(clipboard.pendingText)
+            clearTimer.interval = root.copyClearSeconds * 1000
+            clearTimer.restart()
+          }
+        } else {
+          root.copyNotice = "Could not copy to the clipboard. Is wl-clipboard installed?"
+        }
+        clipboard.pendingText = ""
+        clipboard.pendingNotice = ""
+        clipboard.pendingSensitive = false
       }
     }
 
@@ -514,10 +577,17 @@ Panel {
       anchors.fill: parent
       focus: true
 
+      // PanelKeyCatcher would own these keys, but the editors need Tab, arrows
+      // and Shift-selection for editing, so the panel keeps its own catcher and
+      // mirrors the signals it would otherwise get.
       Keys.onPressed: function(event) {
         if (event.key === Qt.Key_Escape) {
           if (root.verifyTarget) root.verifyTarget = null
           else root.close()
+          event.accepted = true
+        } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+          var forward = event.key === Qt.Key_Tab && !(event.modifiers & Qt.ShiftModifier)
+          root.switchPanel(forward ? 1 : -1)
           event.accepted = true
         } else if (event.modifiers & Qt.ControlModifier) {
           if (event.key === Qt.Key_1) { root.setMode("read"); event.accepted = true }
@@ -621,6 +691,16 @@ Panel {
 
             Message { width: parent.width; tone: "bad"; text: root.readError }
 
+            Repeater {
+              model: root.readSummary ? root.readSummary.warnings : []
+              delegate: Message {
+                required property string modelData
+                width: parent.width
+                tone: "bad"
+                text: "!  " + modelData
+              }
+            }
+
             Row {
               spacing: Style.spacing.md
               visible: root.readNotice === "This is a key, not a message."
@@ -678,7 +758,7 @@ Panel {
                 width: Style.space(300)
                 text: root.copyArmed
                   ? "Other apps and clipboard history can read the clipboard. Click again to copy."
-                  : (root.readNotice.indexOf("Copied") === 0 ? root.readNotice : "")
+                  : root.copyNotice
               }
             }
           }
@@ -763,6 +843,7 @@ Panel {
             PgpTextArea {
               id: writeInput
               objectName: "pgpWriteInput"
+              onCopyRequested: function(text, cut) { root.copyEditorText(text, cut) }
               enabled: !root.busy
               width: parent.width
               height: Style.space(140)
@@ -791,6 +872,7 @@ Panel {
             }
 
             Message { width: parent.width; tone: "bad"; text: root.writeError }
+            Caption { width: parent.width; text: root.copyNotice }
 
             Caption {
               width: parent.width
@@ -968,6 +1050,7 @@ Panel {
 
             PgpTextArea {
               id: importInput
+              onCopyRequested: function(text, cut) { root.copyEditorText(text, cut) }
               enabled: !root.busy
               width: parent.width
               height: Style.space(100)
@@ -1003,6 +1086,8 @@ Panel {
               width: parent.width
               text: "GnuPG keeps any existing key passphrase protection and asks for it in its own window. Importing an unprotected key does not add a passphrase."
             }
+
+            Caption { width: parent.width; text: root.copyNotice }
           }
         }
       }

@@ -26,6 +26,9 @@ cryptography of its own.
   and `gpg`. The plugin does not put it on a command line, save it in message
   files, log it, or keep drafts/history. Imported keys are intentionally saved
   by GnuPG in the selected keyring.
+- GnuPG's machine-readable status lines travel on their own pipe, separate from
+  its diagnostics, so no log text can be mistaken for a signature or decryption
+  status. Arguments that would merge the two streams are refused.
 - gpg runs with `--disable-dirmngr`, `--no-auto-key-retrieve`, and
   `--no-auto-key-import`, so it never contacts a keyserver and never imports
   keys you didn't paste in yourself. omaPGP itself makes no network requests.
@@ -39,8 +42,16 @@ cryptography of its own.
 - Copying decrypted or signed-only text through its Copy button takes two clicks,
   is marked sensitive for clipboard managers, and is cleared after 45 seconds (configurable)
   if it is still there. Output views deliberately have no text-selection or
-  built-in Copy action, so there is no alternate unguarded copy path. Sensitive
-  hints are advisory: other applications and clipboard managers may ignore them.
+  built-in Copy action. Copy and Cut in the editable boxes — which hold your
+  draft and any pasted private key — are routed through the same guarded
+  clipboard path instead of Qt's built-in actions. Sensitive hints are
+  advisory: other applications and clipboard managers may ignore them.
+- The plugin reports failed clipboard writes instead of claiming success, and it
+  shows a warning when GnuPG exits abnormally after displaying text, rather than
+  presenting a partial result as complete.
+- Key names are displayed with control, line-separator, and text-direction
+  characters escaped, so an unusual name cannot add or disguise lines in the
+  signature result.
 - Encrypting to a key you haven't verified requires an explicit confirmation.
 
 Limits worth knowing: Omarchy plugins run unsandboxed inside the shared shell
@@ -59,6 +70,8 @@ placed it in clipboard history; omaPGP cannot remove another app's saved copies.
   Larger messages or key bundles must be handled outside the panel.
 - Each crypto worker has a **256 MiB address-space limit**, a **30-second CPU
   budget**, a **120-second wall-clock deadline**, and bounded diagnostic output.
+  The `gnupgHome` setting must be an absolute path (or start with `~`); a
+  relative path is refused instead of creating a keyring in an unexpected place.
   These limits are not a security sandbox or a limit on your shared GnuPG agent.
 - `gpg.conf` is intentionally ignored. Configured extra recipients, group aliases,
   output destinations, default signing choices, and algorithm overrides do not
@@ -131,7 +144,7 @@ Set these in the bar widget's settings, or in `~/.config/omarchy/shell.json`:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `gnupgHome` | (blank: `~/.gnupg`) | Use a separate keyring folder just for omaPGP |
+| `gnupgHome` | (blank: `~/.gnupg`) | Use a separate keyring folder just for omaPGP (absolute path, or `~/...`) |
 | `copyClearSeconds` | `45` | Clear copied plaintext after this many seconds; `0` disables |
 
 ## Development
@@ -149,8 +162,9 @@ bash tests/run-all.sh
 ```
 
 The tests use throwaway keyrings in temporary folders and never touch
-`~/.gnupg`. They cover parsing, per-identity trust, malicious configuration,
-compressed-output limits, worker deadlines/cleanup, delayed callbacks, and
+`~/.gnupg`. They cover parsing, per-identity trust and identity display sanitisation,
+malicious configuration, compressed-output limits, worker deadlines/cleanup and
+status-stream separation, delayed callbacks, guarded editor copy paths, and
 normal gpg encrypt/sign/decrypt/verify/import round trips. A protected test key
 uses a test-only pinentry implementation, never a real password prompt.
 

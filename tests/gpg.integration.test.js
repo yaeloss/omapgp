@@ -22,9 +22,13 @@ function home() {
   return dir
 }
 
+// Direct gpg calls use a fourth pipe for status lines, matching the worker's
+// separate status channel; stderr stays diagnostics-only.
 function run(args, input) {
-  const r = spawnSync(args[0], args.slice(1), { input: input === undefined ? "" : input, encoding: "utf8" })
-  return { exitCode: r.status, stdout: r.stdout, status: model.parseStatus(r.stderr.split("\n")) }
+  const r = spawnSync(args[0], [...args.slice(1, 2), "--status-fd", "3", ...args.slice(2)],
+    { input: input === undefined ? "" : input, encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe", "pipe"] })
+  return { exitCode: r.status, stdout: r.stdout, status: model.parseStatus(r.output[3].split("\n")) }
 }
 
 function genKey(dir, uid) {
@@ -149,6 +153,20 @@ try {
   changed = model.findKey(keys(bob), aliceKey.fingerprint)
   assert.equal(changed.verified, true)
   assert.equal(changed.uids.find(u => u.text.startsWith("Other Person")).validity, "-")
+
+  // F8: usable text followed by a block gpg cannot process must warn, not
+  // silently succeed. A stray signed block after an encrypted message does it.
+  const joined = workerRun(model.decryptArgs(bob), armored + run(model.clearsignArgs(alice, aliceKey.fingerprint), "trailing\n").stdout)
+  const joinedSummary = model.decryptSummary(model.parseStatus(joined.statusLines), joined.exitCode)
+  assert.notEqual(joined.exitCode, 0)
+  assert.equal(joinedSummary.error, "")
+  assert.ok(joinedSummary.warnings.length > 0, "extra unprocessed data is reported")
+  assert.match(joinedSummary.warnings.join(" "), /extra data|exited with an error/)
+
+  // GnuPG status lines arrive on their own channel, not mixed with diagnostics.
+  const statuses = workerRun(model.decryptArgs(bob), armored).statusLines
+  assert.ok(statuses.every(line => line.startsWith("[GNUPG:] ")))
+  assert.ok(statuses.some(line => line.includes("DECRYPTION_OKAY")))
 
   // F3: even a conflicting options file cannot add recipients or redirect output.
   const unexpectedFile = path.join(alice, "must-not-exist.txt")

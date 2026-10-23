@@ -19,12 +19,13 @@ var BASE_ARGS = [
   "--no-groups",
   "--max-output", "262144",
   "--output", "-",
-  "--display-charset", "utf-8",
-  "--status-fd", "2"
+  "--display-charset", "utf-8"
 ]
 
 var MAX_INPUT_BYTES = 64 * 1024
-var MAX_INPUT_CHARS = MAX_INPUT_BYTES
+// Upper bound on characters accepted by an editor before the byte check runs,
+// so a huge paste can be rejected without measuring every code point first.
+var MAX_INPUT_CHARS = 64 * 1024
 var MAX_OUTPUT_BYTES = 256 * 1024
 
 function gpgArgs(homedir, extra) {
@@ -164,10 +165,14 @@ function parseKeys(publicColons, secretColons) {
     if (!isFingerprint(key.fingerprint)) continue
     var primary = key.uids.length > 0 ? key.uids[0].text : ""
     var parts = splitUid(primary)
+    // `uid` stays as GnuPG reported it; `displayUid` is the sanitized form the
+    // UI shows and the form signing asks GnuPG to match.
     key.uid = primary
+    key.displayUid = displayIdentity(primary)
     key.uidValidity = key.uids.length > 0 ? key.uids[0].validity : "-"
     key.name = parts.name || "(no name)"
     key.email = parts.email
+    key.label = displayIdentity(parts.email ? key.name + " <" + key.email + ">" : key.name)
     key.revoked = key.validity === "r"
     key.expired = key.validity === "e"
     key.usable = !key.revoked && !key.expired && !key.disabled
@@ -176,7 +181,7 @@ function parseKeys(publicColons, secretColons) {
   }
   result.sort(function(a, b) {
     if (a.hasSecret !== b.hasSecret) return a.hasSecret ? -1 : 1
-    return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : (a.name.toLowerCase() > b.name.toLowerCase() ? 1 : 0)
+    return a.label.toLowerCase() < b.label.toLowerCase() ? -1 : (a.label.toLowerCase() > b.label.toLowerCase() ? 1 : 0)
   })
   return result
 }
@@ -209,13 +214,24 @@ function shortFingerprint(fpr) {
 
 function keyLabel(key) {
   if (!key) return ""
-  return displayIdentity(key.email ? key.name + " <" + key.email + ">" : key.name)
+  if (typeof key.label === "string" && key.label !== "") return key.label
+  var name = displayIdentity(key.name)
+  var email = displayIdentity(key.email)
+  return email ? name + " <" + email + ">" : name
 }
 
+// Key names come from whoever made the key. Escape anything that could act as
+// a line break, reverse or hide text, or split a single-line identity label.
+// Line/paragraph separators count as whitespace here because Qt renders them
+// as real line breaks, so a pasted-in name could otherwise grow a fake line.
 function displayIdentity(value) {
-  return String(value || "").replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, function(c) {
-    return "\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4)
-  })
+  return String(value || "")
+    .replace(/[\u0009-\u000d\u0085\u2028\u2029]/g, " ")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u061c\u00ad\ufeff]/g, function(c) {
+      return "\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4)
+    })
+    .replace(/ {2,}/g, " ")
+    .trim()
 }
 
 function statusUid(value) {
@@ -279,6 +295,7 @@ function workerFailure(result) {
   case "timeout": return "The operation timed out. Please try again."
   case "cancelled": return "The operation was cancelled."
   case "agent-unavailable": return "GnuPG's passphrase agent could not be started. Check your GnuPG agent configuration."
+  case "homedir": return "The GnuPG home folder setting must be an absolute path, for example ~/.gnupg."
   case "": case undefined: return ""
   default: return "The isolated worker could not complete the operation."
   }
@@ -325,9 +342,13 @@ function decryptSummary(status, exitCode) {
     decryptFailed: false,
     noSecretKey: false,
     integrityOk: false,
+    failed: false,
+    gpgError: false,
+    plaintextIncomplete: false,
     recipients: [],
     signatures: [],
-    error: ""
+    error: "",
+    warnings: []
   }
   var sig = null
   var missingSecret = []
@@ -377,6 +398,12 @@ function decryptSummary(status, exitCode) {
     case "NODATA": s.error = "No PGP data found in the text."; break
     case "UNEXPECTED": s.error = "The PGP data is malformed."; break
     case "BADARMOR": s.error = "The PGP armor is damaged."; break
+    case "FAILURE": s.failed = true; break
+    case "ERROR":
+      if (st.rest.indexOf("decryption.early_plaintext") === 0 ||
+          st.rest.indexOf("proc_pkt") === 0) s.plaintextIncomplete = true
+      else s.gpgError = true
+      break
     }
   }
   for (var j = 0; j < s.signatures.length; j++) {
@@ -395,6 +422,16 @@ function decryptSummary(status, exitCode) {
     s.error = s.noSecretKey ? "None of your secret keys can decrypt this message." : "Decryption failed or was cancelled."
   if (!s.error && !s.encrypted && s.signatures.length === 0 && exitCode !== 0)
     s.error = "gpg could not read this text."
+  // gpg can exit abnormally after emitting usable text, for example when extra
+  // data follows a valid block. Report it rather than a silent success, but
+  // keep text that was genuinely decrypted or signed visible.
+  var usable = s.decrypted || s.signatures.length > 0
+  if (!s.error && !s.decryptFailed && !usable && (s.failed || exitCode !== 0))
+    s.error = "GnuPG reported an error while processing this text."
+  if (s.plaintextIncomplete) s.warnings.push("The text contained extra data that GnuPG could not process and did not show.")
+  else if (s.gpgError && !s.error) s.warnings.push("GnuPG reported an error; part of the message may be missing.")
+  else if (exitCode !== 0 && !s.error && !s.decryptFailed)
+    s.warnings.push("GnuPG exited with an error after showing this text; part of the message may be missing.")
   return s
 }
 
@@ -498,6 +535,7 @@ if (typeof module !== "undefined") {
     importArgs: importArgs,
     exportArgs: exportArgs,
     lsignArgs: lsignArgs,
+    displayIdentity: displayIdentity,
     parseKeys: parseKeys,
     validityLabel: validityLabel,
     formatFingerprint: formatFingerprint,

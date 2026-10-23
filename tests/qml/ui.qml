@@ -11,6 +11,15 @@ ShellRoot {
     console.log((ok ? "ok   " : "FAIL ") + label)
     if (!ok) failures++
   }
+  // The clipboard's test hook records copies so the harness never touches the
+  // desktop clipboard.
+  function stubClipboard(panel) {
+    var clipboard = find(panel, "pgpClipboard")
+    clipboard.override = function(text, sensitive, notice) {
+      clipboard.calls = clipboard.calls.concat([[text, sensitive, notice]])
+    }
+    return clipboard
+  }
   function find(object, name, visited) {
     if (!object) return null
     visited = visited || []
@@ -74,6 +83,27 @@ ShellRoot {
     p.writeOutput = "old ciphertext"
     input.text = "changed"
     check(p.writeOutput === "", "draft edit clears generated output")
+    // Editor copy never reaches the control's built-in clipboard action.
+    var clipboard = stubClipboard(p)
+    input.text = "selection fixture"
+    input.textArea.select(0, 9)
+    input.copySelection(false)
+    check(clipboard.calls.length === 1 && clipboard.calls[0][0] === "selection",
+          "editor copy hands the selection to the guarded clipboard path")
+    check(clipboard.calls.length === 1 && clipboard.calls[0][1] === true,
+          "editor copy is marked sensitive")
+    check(input.text === "selection fixture", "copying does not alter the draft")
+    input.textArea.select(0, 9)
+    input.copySelection(true)
+    check(clipboard.calls.length === 2 && input.text === " fixture",
+          "cut goes through the same guarded path and removes the selection")
+
+    // Typing past the limit keeps the draft instead of wiping it.
+    input.text = "preserved draft"
+    var before = input.text
+    input.text = before + "x".repeat(Model.MAX_INPUT_CHARS + 1)
+    check(input.text === before, "oversized edit reverts and keeps the existing draft")
+
     p.readPlaintext = "fixture"
     output.text = "fixture"
     p.clearReadResult()

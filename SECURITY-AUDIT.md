@@ -51,6 +51,35 @@ desktop clipboard integration, and hardware-token behavior remain manual
 integration checks. This update is not an independent follow-up audit or a
 claim that all possible vulnerabilities have been eliminated.
 
+## Follow-up review — October 23, 2026 (0.1.2)
+
+A second review of the 0.1.1 remediation found no critical issue and confirmed
+the F1–F6 fixes with the existing and new tests. It added these changes:
+
+- **Status channel.** GnuPG status lines now arrive on a dedicated inherited
+  pipe instead of sharing fd 2 with diagnostics, which removes the
+  status-impersonation pattern behind CVE-2018-12020 from this plugin's surface.
+  Arguments that would put status back next to stderr are refused.
+- **Editor copy paths.** Copy and Cut in the draft and key-import editors now go
+  through the guarded sensitive-copy path; previously they used Qt's built-in
+  clipboard action. Qt's primary-selection mirroring on mouse drag is a
+  platform behaviour QML cannot disable per control and remains documented.
+- **Identity display.** Line/paragraph separators, invisible direction marks,
+  zero-width characters, and control characters are escaped or flattened, and
+  verification certifies the same sanitised identity that is displayed.
+- **Abnormal exits.** A non-zero GnuPG exit after usable text was produced is
+  now surfaced as a warning (or an error when there is no usable result), rather
+  than a clean success. Joined encrypted/clearsigned blocks are covered by a
+  real-GnuPG test.
+- **Clipboard honesty.** A failed `wl-copy` is reported; success is only claimed
+  after a zero exit, and the expiry hash comes from the copied text itself.
+- **Worker input.** Redirected files and `/dev/null` no longer fail the poller.
+  The `gnupgHome` setting must be absolute. Oversized edits revert instead of
+  clearing the draft.
+
+These checks were local, source-level, and test-backed. They are not an
+independent audit.
+
 ## Original assessment (0.1.0)
 
 Source locations below refer to the original pre-release snapshot identified

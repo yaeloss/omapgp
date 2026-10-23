@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.yaeloss.omapgp",
   "name": "omaPGP",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": "Yaël",
   "license": "MIT",
   "description": "Read, write, encrypt, decrypt, sign, and verify PGP text from the Omarchy bar using your local GnuPG keyring and bounded, pipe-only processing.",
@@ -38,7 +38,7 @@
         "type": "string",
         "label": "GnuPG home folder",
         "defaultValue": "",
-        "description": "Leave blank to use your normal keyring (~/.gnupg). Set a folder, such as ~/.local/share/omapgp/gnupg, to keep a separate keyring just for omaPGP."
+        "description": "Leave blank to use your normal keyring (~/.gnupg). Set an absolute folder, such as ~/.local/share/omapgp/gnupg, to keep a separate keyring just for omaPGP. Relative paths are refused."
       },
       {
         "key": "copyClearSeconds",

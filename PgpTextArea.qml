@@ -7,6 +7,10 @@ import "Model.js" as Model
 
 // Multi-line plain-text editor styled like the kit's TextField. Rich text is
 // never rendered: a message can't load remote content or hide markup.
+//
+// Copy and cut never use the control's built-in clipboard actions. They emit
+// copyRequested so the panel can route drafts and pasted private keys through
+// the same guarded, auto-expiring clipboard path as decrypted output.
 BorderSurface {
   id: root
 
@@ -18,6 +22,7 @@ BorderSurface {
   property color accent: Color.accent
   property bool monospace: true
   property int _revision: 0
+  property string _lastText: ""
 
   readonly property bool editorFocused: area.activeFocus
   readonly property bool _hot: hover.hovered
@@ -25,9 +30,30 @@ BorderSurface {
 
   signal submitRequested()
   signal inputRejected(string message)
+  // text, and whether the source selection should be deleted.
+  signal copyRequested(string text, bool cut)
 
-  function clear() { pasteReader.cancel(); _revision++; area.text = "" }
+  function clear() { pasteReader.cancel(); _revision++; _lastText = ""; area.text = "" }
+  function _rejectEdit(message) {
+    var position = area.cursorPosition
+    area.text = root._lastText
+    area.cursorPosition = Math.min(position, area.length)
+    Qt.callLater(function() { root.inputRejected(message) })
+  }
   function focusEditor() { area.forceActiveFocus() }
+  function selectedText() {
+    return area.selectionStart === area.selectionEnd ? ""
+      : area.getText(area.selectionStart, area.selectionEnd)
+  }
+  // Every Copy/Cut path in this editor ends here; it never invokes the
+  // control's built-in clipboard action.
+  function copySelection(cut) {
+    var selection = selectedText()
+    if (selection === "") return
+    root.copyRequested(selection, cut)
+    if (cut) area.remove(area.selectionStart, area.selectionEnd)
+    area.deselect()
+  }
   function pasteClipboard(primary, replaceAll) {
     if (readOnly || pasteReader.running) return
     area.forceActiveFocus()
@@ -88,16 +114,31 @@ BorderSurface {
       background: null
 
       onTextChanged: {
-        root._revision++
-        if (Model.inputTooLarge(text)) {
-          text = ""
-          Qt.callLater(function() { root.inputRejected("Input is too large (maximum 64 KiB of UTF-8 text).") })
+        var limit = "Input is too large (maximum 64 KiB of UTF-8 text)."
+        // Revert just this edit instead of discarding the whole draft.
+        if (text.length > Model.MAX_INPUT_CHARS) { root._rejectEdit(limit); return }
+        if (text.length <= root._lastText.length) {
+          // Shorter than before: a deletion, which never needs the byte check.
+          root._lastText = text
+          root._revision++
+          return
         }
+        root._lastText = text
+        root._revision++
+        if (Model.inputTooLarge(text)) root._rejectEdit(limit)
       }
 
       ContextMenu.menu: Controls.Menu {
-        Controls.MenuItem { text: "Copy"; enabled: area.selectedText !== ""; onTriggered: area.copy() }
-        Controls.MenuItem { text: "Cut"; enabled: !area.readOnly && area.selectedText !== ""; onTriggered: area.cut() }
+        Controls.MenuItem {
+          text: "Copy"
+          enabled: area.selectedText !== ""
+          onTriggered: root.copySelection(false)
+        }
+        Controls.MenuItem {
+          text: "Cut"
+          enabled: !area.readOnly && area.selectedText !== ""
+          onTriggered: root.copySelection(true)
+        }
         Controls.MenuItem { text: "Paste"; enabled: !area.readOnly; onTriggered: root.pasteClipboard(false, false) }
         Controls.MenuItem { text: "Select all"; onTriggered: area.selectAll() }
       }
@@ -113,13 +154,21 @@ BorderSurface {
 
       // Tab moves focus instead of inserting a tab; Ctrl+Enter submits.
       Keys.onPressed: function(event) {
-        if (event.matches(StandardKey.Paste)) {
+        if (event.matches(StandardKey.Copy)) {
+          root.copySelection(false)
+          event.accepted = true
+        } else if (event.matches(StandardKey.Cut)) {
+          if (!area.readOnly) root.copySelection(true)
+          event.accepted = true
+        } else if (event.matches(StandardKey.Paste)) {
           root.pasteClipboard(false, false)
           event.accepted = true
         } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
           var next = area.nextItemInFocusChain(event.key === Qt.Key_Tab && !(event.modifiers & Qt.ShiftModifier))
-          if (next) next.forceActiveFocus()
-          event.accepted = true
+          if (next) {
+            next.forceActiveFocus()
+            event.accepted = true
+          }
         } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && (event.modifiers & Qt.ControlModifier)) {
           root.submitRequested()
           event.accepted = true

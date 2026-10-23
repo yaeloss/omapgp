@@ -23,7 +23,9 @@ function context() {
   let pending = null
   const c = {
     Model, opened:true, _operationEpoch:0, _actionKind:"", _readRevision:0, _writeRevision:0,
-    homedir:"/disposable", recipients:[FPR], signer:"", encryptToSelf:false, selfKey:null,
+    homedir:"/disposable", homedirError:"", copyNotice:"", copyClearSeconds:45,
+    copyTimeoutNotice(text) { return text + " (clears in 45s)" },
+    recipients:[FPR], signer:"", encryptToSelf:false, selfKey:null,
     keysLoaded:true, keys:[{fingerprint:FPR, keyId:FPR.slice(-16), usable:true, canEncrypt:true}],
     unverifiedRecipients:[], allowUnverified:false, writeOutput:"", writeError:"", writeOutputKind:"",
     writeOutputSensitive:false, writeCopyArmed:false,
@@ -38,7 +40,7 @@ function context() {
   Object.defineProperty(c, "busy", {get:()=>c.gpg.running})
   c.root = c
   const context = vm.createContext(c)
-  for (const name of ["clearReadResult", "clearWriteResult", "cancelAction", "invalidateRead", "invalidateWrite", "runGpg", "encrypt", "signOnly", "decrypt", "copyWriteOutput"]) {
+  for (const name of ["clearReadResult", "clearWriteResult", "cancelAction", "invalidateRead", "invalidateWrite", "runGpg", "encrypt", "signOnly", "decrypt", "copyWriteOutput", "copyEditorText"]) {
     vm.runInContext(extract(name), context)
   }
   return c
@@ -92,7 +94,38 @@ signedCopy.writeOutputSensitive = true
 signedCopy.copyWriteOutput()
 assert.equal(signedCopy.clipboard.calls.length, 0)
 signedCopy.copyWriteOutput()
-assert.deepEqual(signedCopy.clipboard.calls, [["signed plaintext fixture", true]])
+assert.deepEqual(signedCopy.clipboard.calls, [["signed plaintext fixture", true, "Copied the signed message. (clears in 45s)"]])
+
+// Ciphertext is public, so copying it needs no confirmation or expiry.
+const ciphertextCopy = context()
+ciphertextCopy.writeOutput = "-----BEGIN PGP MESSAGE-----\nfixture"
+ciphertextCopy.writeOutputSensitive = false
+ciphertextCopy.copyWriteOutput()
+assert.deepEqual(ciphertextCopy.clipboard.calls, [["-----BEGIN PGP MESSAGE-----\nfixture", false, "Copied the encrypted message."]])
+
+// Editor copies (drafts, pasted keys) go through the same guarded path.
+const editorContext = context()
+editorContext.copyEditorText("draft secret", false)
+assert.deepEqual(editorContext.clipboard.calls, [["draft secret", true, "Copied the selection. (clears in 45s)"]])
+editorContext.clipboard.calls = []
+editorContext.copyEditorText("draft secret", true)
+assert.deepEqual(editorContext.clipboard.calls, [["draft secret", true, "Moved the selection to the clipboard. (clears in 45s)"]])
+editorContext.copyEditorText("", false)
+assert.equal(editorContext.clipboard.calls.length, 1, "empty selections are not copied")
+
+// A copy request while wl-copy is still running is reported, not dropped.
+const busyCopy = context()
+busyCopy.copyNotice = ""
+busyCopy.clipboard.copy = function() { return false }
+busyCopy.copyEditorText("draft secret", false)
+assert.match(busyCopy.copyNotice, /still finishing/)
+
+// A bad gnupgHome fails closed before gpg can start.
+const badHome = context()
+badHome.homedirError = "relative"
+badHome.encrypt()
+assert.equal(badHome.gpg.running, false)
+assert.match(badHome.writeError, /absolute path/)
 
 for (const name of ["Recipients", "Signer", "EncryptToSelf", "AllowUnverified", "Keys"]) {
   assert.match(source, new RegExp("on" + name + "Changed: invalidateWrite\\(\\)"))

@@ -22,6 +22,15 @@ The version in `manifest.json` is not evidence that a release has been published
   references and editor undo history. Superseded callbacks cannot restore text.
 - Sensitive output has no default selection/copy path. Its explicit Copy button
   asks twice, sets a sensitive clipboard hint, and schedules conditional expiry.
+  Copy and Cut inside the draft and import editors use the same guarded path, so
+  a draft or a pasted private key does not travel through Qt's built-in clipboard
+  action.
+- GnuPG status lines are read from a dedicated pipe rather than from stderr, so
+  diagnostics cannot be parsed as a signature or decryption result.
+- Key names are sanitised for display: control characters, line/paragraph
+  separators, and text-direction overrides are escaped or flattened.
+- A failed clipboard write is reported as a failure, and an abnormal GnuPG exit
+  after text was displayed is shown as a warning rather than a clean success.
 
 For exact limits and configuration behavior, see [README.md](README.md#resource-and-configuration-policy).
 
@@ -34,6 +43,10 @@ For exact limits and configuration behavior, see [README.md](README.md#resource-
   this plugin's control. The worker suppresses its own core dumps only.
 - Clipboard hints are advisory. Other applications can read copied text, and
   clipboard managers may ignore the hint. Expiry cannot retract a saved copy.
+- Qt mirrors the current text selection to the Wayland primary selection while
+  you drag-select inside a text field, and QML cannot disable that separately.
+  The guarded Copy/Cut actions clear the selection afterwards, but a selection
+  left highlighted can still be visible to primary-selection tools.
 - Pasting a private key does not remove copies already made by other programs
   or add a passphrase to an unprotected key. Importing keys intentionally changes
   the selected GnuPG keyring; cancelling is not a rollback of completed imports.
@@ -68,6 +81,8 @@ and messages. Public issue templates are not a private channel.
   success, cancellation, and panel recovery. Do not use a production key.
 - Check explicit Copy confirmation, the sensitive hint, expiry, and preservation
   of clipboard content that the user replaces before the timer fires.
+- Check that Ctrl+C/Ctrl+X and the right-click menu in the draft and import
+  editors use the guarded copy and show the clipboard notice.
 - Check the hardware-token path if support is being claimed for that device.
 - Confirm close/reload cancels work and clears input, output, and undo history.
 - Keep unresolved manual checks visible in release notes; do not describe a

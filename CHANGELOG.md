@@ -1,6 +1,40 @@
 # Changelog
 
-## Unreleased — 0.1.1 release candidate
+## Unreleased — 0.1.2
+
+Follow-up hardening from a second review of the 0.1.1 candidate.
+
+### Security
+
+- Read GnuPG status lines from a dedicated pipe instead of stderr, and refuse
+  arguments that would merge status with diagnostics. This closes the
+  status-line impersonation class behind CVE-2018-12020 for this plugin.
+- Route Copy/Cut in the draft and key-import editors through the guarded,
+  sensitive clipboard path; they previously used Qt's built-in action.
+- Escape line/paragraph separators, invisible direction marks, and zero-width
+  characters in displayed key names, and sign the same sanitised identity that
+  is shown.
+- Report an abnormal GnuPG exit after text was displayed as a warning instead of
+  a silent success, and keep genuinely decrypted text visible alongside it.
+- Report failed `wl-copy` writes instead of claiming the text was copied.
+- Refuse a relative `gnupgHome` setting instead of creating a keyring relative to
+  the shell's working directory.
+- Name `python3`, `wl-copy`, `wl-paste`, and `sh` by absolute path alongside gpg.
+
+### Fixed
+
+- The worker failed with a permission error when stdin was a regular file or
+  `/dev/null`; it now falls back to a plain read.
+- Editing past the 64 KiB limit wiped the whole draft. The rejected edit is now
+  reverted and the existing draft is kept.
+
+### Tests
+
+- New coverage for status-stream separation, status argv rejection, redirected
+  stdin, identity-display sanitisation, abnormal-exit warnings, guarded editor
+  copy/cut, and draft preservation on oversized edits.
+
+## 0.1.1 release candidate
 
 This is the first publication candidate. The earlier 0.1.0 development snapshot
 was not a published release.
