@@ -16,7 +16,7 @@ for file in /usr/share/omarchy/shell/Ui/*; do
 done
 cp "$repo/tests/qml/KeyboardPanel.qml" "$work/shell/Ui/"
 status=0
-out="$(QT_QPA_PLATFORM=offscreen timeout 25 quickshell -p "$work/shell" 2>&1)" || status=$?
+out="$(env -u WAYLAND_SOCKET WAYLAND_DISPLAY="$work/no-wayland" QT_QPA_PLATFORM=offscreen timeout 25 quickshell -p "$work/shell" 2>&1)" || status=$?
 if (( status != 0 )); then printf '%s\n' "$out" >&2; exit "$status"; fi
 printf '%s\n' "$out" | sed -n '/ok   /p; /FAIL/p; /harness/p; /ERROR/p; /caused by/p'
 if ! grep -q 'ui harness passed' <<<"$out"; then printf '%s\n' "$out"; exit 1; fi

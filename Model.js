@@ -115,12 +115,23 @@ function splitUid(uid) {
 function parseKeys(publicColons, secretColons) {
   var secret = {}
   var lines = String(secretColons || "").split("\n")
-  var inSec = false
+  var secretKey = null
+  var expectSecretFpr = false
   for (var s = 0; s < lines.length; s++) {
     var f = lines[s].split(":")
-    if (f[0] === "sec") inSec = true
-    else if (f[0] === "ssb" || f[0] === "pub" || f[0] === "sub") inSec = false
-    else if (f[0] === "fpr" && inSec) { secret[f[9]] = true; inSec = false }
+    if (f[0] === "sec") {
+      secretKey = { canDecrypt: false }
+      expectSecretFpr = true
+    } else if (f[0] === "fpr" && expectSecretFpr) {
+      secret[f[9]] = secretKey
+      expectSecretFpr = false
+    }
+    // Lowercase e describes this component. Uppercase E on sec can come
+    // from a different subkey, whose private material may be missing (#).
+    if (secretKey && (f[0] === "sec" || f[0] === "ssb") && f[14] !== "#" &&
+        (f[11] || "").indexOf("e") !== -1 && ["r", "e", "i", "d"].indexOf(f[1]) === -1) {
+      secretKey.canDecrypt = true
+    }
   }
 
   var keys = []
@@ -142,13 +153,16 @@ function parseKeys(publicColons, secretColons) {
         canSign: caps.indexOf("S") !== -1,
         disabled: caps.indexOf("D") !== -1,
         uids: [],
-        hasSecret: false
+        hasSecret: false,
+        canDecrypt: false
       }
       keys.push(current)
       expectPrimaryFpr = true
     } else if (type === "fpr" && current && expectPrimaryFpr) {
       current.fingerprint = fields[9] || ""
-      current.hasSecret = secret[current.fingerprint] === true
+      var matchingSecret = secret[current.fingerprint]
+      current.hasSecret = !!matchingSecret
+      current.canDecrypt = !!matchingSecret && matchingSecret.canDecrypt
       expectPrimaryFpr = false
     } else if (type === "sub") {
       expectPrimaryFpr = false
@@ -165,8 +179,7 @@ function parseKeys(publicColons, secretColons) {
     if (!isFingerprint(key.fingerprint)) continue
     var primary = key.uids.length > 0 ? key.uids[0].text : ""
     var parts = splitUid(primary)
-    // `uid` stays as GnuPG reported it; `displayUid` is the sanitized form the
-    // UI shows and the form signing asks GnuPG to match.
+    // Use the exact UID for certification and the sanitized form for display.
     key.uid = primary
     key.displayUid = displayIdentity(primary)
     key.uidValidity = key.uids.length > 0 ? key.uids[0].validity : "-"
@@ -242,15 +255,21 @@ function statusUid(value) {
 function findKey(keys, fprOrKeyId) {
   var id = String(fprOrKeyId || "").toUpperCase()
   if (!id) return null
+  var fullFingerprint = isFingerprint(id)
   for (var i = 0; i < keys.length; i++) {
     var fpr = keys[i].fingerprint
-    if (fpr === id || keys[i].keyId === id || (id.length >= 16 && fpr.slice(-id.length) === id)) return keys[i]
+    if (fpr === id) return keys[i]
+    if (!fullFingerprint && (keys[i].keyId === id || (id.length >= 16 && fpr.slice(-id.length) === id))) return keys[i]
   }
   return null
 }
 
 function encryptionKeys(keys) {
   return keys.filter(function(k) { return k.usable && k.canEncrypt })
+}
+
+function personalEncryptionKeys(keys) {
+  return encryptionKeys(keys).filter(function(k) { return k.canDecrypt })
 }
 
 function signingKeys(keys) {
@@ -453,12 +472,14 @@ function signatureText(sig, keys) {
 // "good" | "warn" | "bad" — drives the colour of the signature line.
 function signatureIdentity(sig, keys) {
   if (sig.state !== "good" || !sig.valid || !isFingerprint(sig.fingerprint)) return false
-  var key = findKey(keys || [], sig.fingerprint)
-  if (!key || !key.usable) return false
   // GOODSIG uses percent encoding, unlike the C escapes in --with-colons.
   // Decoding both formats would let a literal "\\x3a" impersonate a colon.
   var uid = statusUid(sig.uid)
-  if (uid === null) return false
+  return uid !== null && isVerifiedUid(findKey(keys || [], sig.fingerprint), uid)
+}
+
+function isVerifiedUid(key, uid) {
+  if (!key || !key.usable || !uid) return false
   for (var i = 0; i < key.uids.length; i++) {
     if (key.uids[i].text === uid && (key.uids[i].validity === "f" || key.uids[i].validity === "u")) return true
   }
@@ -543,6 +564,7 @@ if (typeof module !== "undefined") {
     keyLabel: keyLabel,
     findKey: findKey,
     encryptionKeys: encryptionKeys,
+    personalEncryptionKeys: personalEncryptionKeys,
     signingKeys: signingKeys,
     messageKind: messageKind,
     inputTooLarge: inputTooLarge,
@@ -555,6 +577,7 @@ if (typeof module !== "undefined") {
     signatureText: signatureText,
     signatureTone: signatureTone,
     signatureIdentity: signatureIdentity,
+    isVerifiedUid: isVerifiedUid,
     encryptFailure: encryptFailure,
     importSummary: importSummary,
     hasStatus: hasStatus

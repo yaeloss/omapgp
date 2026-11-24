@@ -20,7 +20,7 @@ const pub = [
   "fpr:::::::::1111111111111111111111111111111111111111:",
   "uid:r::::1792688722::60D5::Revoked <r@example.invalid>::::::::::0:"
 ].join("\n")
-const sec = ["sec:u:255:22:AB5368D1CED2B790:1792688722:::u:::scESC:::+::ed25519:::0:", `fpr:::::::::${ALICE}:`, "grp:::::::::2D0E:", "ssb:u:255:18:DCBD:1:::::e:::+:::", "fpr:::::::::62947799E41A109541888E5BDCBD2778A6715DCC:"].join("\n")
+const sec = ["sec:u:255:22:AB5368D1CED2B790:1792688722:::u:::scESC:::+::ed25519:::0:", `fpr:::::::::${ALICE}:`, "grp:::::::::2D0E:", "ssb:u:255:18:DCBD:1::::::e:::+:::", "fpr:::::::::62947799E41A109541888E5BDCBD2778A6715DCC:"].join("\n")
 
 const keys = model.parseKeys(pub, sec)
 assert.equal(keys.length, 3)
@@ -38,8 +38,13 @@ assert.equal(revoked.usable, false)
 assert.equal(revoked.name, "(no name)")
 assert.deepEqual(model.encryptionKeys(keys).map(k => k.fingerprint), [ALICE, BOB])
 assert.deepEqual(model.signingKeys(keys).map(k => k.fingerprint), [ALICE])
+assert.deepEqual(model.personalEncryptionKeys(keys).map(k => k.fingerprint), [ALICE])
+assert.deepEqual(model.personalEncryptionKeys(model.parseKeys(pub, sec.replace("e:::+", "e:::#"))), [])
+assert.deepEqual(model.personalEncryptionKeys(model.parseKeys(pub, sec.replace("ssb:u", "ssb:e"))), [])
+assert.deepEqual(model.personalEncryptionKeys(model.parseKeys(pub, sec.replace("e:::+", "e:::D27600012401"))).map(k => k.fingerprint), [ALICE])
 assert.equal(model.findKey(keys, "49B2F813C526592F"), bob)
 assert.equal(model.findKey(keys, ""), null)
+assert.equal(model.findKey([{fingerprint:"F".repeat(24) + ALICE}, ...keys], ALICE), keys[0])
 assert.equal(model.formatFingerprint(ALICE), "7EE2 D9F0 6700 2395 724E  24F1 AB53 68D1 CED2 B790")
 
 // argv safety: only fingerprints reach gpg, message text never does.

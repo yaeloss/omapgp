@@ -73,7 +73,7 @@ Useful reports identify the version/commit, Omarchy/Quickshell/GnuPG versions,
 expected and actual behavior, and a minimal reproduction using synthetic keys
 and messages. Public issue templates are not a private channel.
 
-## Before the first release
+## Release checklist
 
 - Run `bash tests/run-portable.sh` and `bash tests/run-all.sh` on Omarchy.
 - Verify the panel title/tooltip, tab navigation, and Escape/outside-click close.

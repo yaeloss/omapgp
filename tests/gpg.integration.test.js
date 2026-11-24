@@ -49,6 +49,22 @@ try {
   const aliceKey = keys(alice)[0]
   const bobKey = keys(bob)[0]
   assert.equal(aliceKey.hasSecret, true)
+  assert.deepEqual(model.personalEncryptionKeys(keys(alice)).map(k => k.fingerprint), [aliceKey.fingerprint])
+
+  const personal = home(); dirs.push(personal)
+  genKey(personal, "Personal Test <personal@example.invalid>")
+  const personalKey = keys(personal)[0]
+  let encryptOnly = run(model.gpgArgs(personal, ["--pinentry-mode", "loopback", "--passphrase", "", "--quick-gen-key",
+    "Encryption Only <encryption-only@example.invalid>", "rsa2048", "encr", "never"]))
+  assert.equal(encryptOnly.exitCode, 0)
+  const encryptionOnlyKey = keys(personal).find(k => k.email === "encryption-only@example.invalid")
+  assert.ok(encryptionOnlyKey)
+  assert.equal(encryptionOnlyKey.canSign, false)
+  assert.deepEqual(new Set(model.personalEncryptionKeys(keys(personal)).map(k => k.fingerprint)),
+    new Set([personalKey.fingerprint, encryptionOnlyKey.fingerprint]))
+  encryptOnly = run(model.encryptArgs(personal, {recipients:[encryptionOnlyKey.fingerprint]}), "Personal copy\n")
+  assert.equal(encryptOnly.exitCode, 0)
+  assert.equal(run(model.decryptArgs(personal), encryptOnly.stdout).stdout, "Personal copy\n")
 
   // Exchange public keys through the same import path the panel uses.
   const bobPub = run(model.exportArgs(bob, bobKey.fingerprint))
@@ -131,11 +147,12 @@ try {
   assert.equal(oversized.stdout, "")
 
   // F2: importing a new primary UID does not inherit a different UID's certificate.
-  for (const uid of ["Uncertified Person <uncertified@example.invalid>", "Other Person <other@example.invalid>"]) {
+  const exactUid = "Uncertified  Person <uncertified@example.invalid>"
+  for (const uid of [exactUid, "Other Person <other@example.invalid>"]) {
     r = run(model.gpgArgs(alice, ["--pinentry-mode", "loopback", "--passphrase", "", "--quick-add-uid", aliceKey.fingerprint, uid]))
     assert.equal(r.exitCode, 0)
   }
-  r = run(model.gpgArgs(alice, ["--quick-set-primary-uid", aliceKey.fingerprint, "Uncertified Person <uncertified@example.invalid>"]))
+  r = run(model.gpgArgs(alice, ["--quick-set-primary-uid", aliceKey.fingerprint, exactUid]))
   assert.equal(r.exitCode, 0)
   r = run(model.importArgs(bob), run(model.exportArgs(alice, aliceKey.fingerprint)).stdout)
   assert.equal(r.exitCode, 0)
@@ -143,6 +160,8 @@ try {
   assert.equal(changed.validity, "f")
   assert.equal(changed.uidValidity, "-")
   assert.equal(changed.verified, false)
+  assert.equal(changed.uid, exactUid)
+  assert.notEqual(changed.displayUid, exactUid)
   r = run(model.decryptArgs(bob), run(model.clearsignArgs(alice, aliceKey.fingerprint), "New UID test\n").stdout)
   s = model.decryptSummary(r.status, r.exitCode)
   assert.equal(s.signatures[0].state, "good")
@@ -152,6 +171,7 @@ try {
   assert.equal(r.exitCode, 0)
   changed = model.findKey(keys(bob), aliceKey.fingerprint)
   assert.equal(changed.verified, true)
+  assert.equal(model.isVerifiedUid(changed, exactUid), true)
   assert.equal(changed.uids.find(u => u.text.startsWith("Other Person")).validity, "-")
 
   // F8: usable text followed by a block gpg cannot process must warn, not

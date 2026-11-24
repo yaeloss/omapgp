@@ -1,32 +1,55 @@
 # Changelog
 
-## Unreleased — 0.1.2
+## 0.1.3
 
-Follow-up hardening from a second review of the 0.1.1 candidate.
+The first tagged release of omaPGP brings safer clipboard handling and a choice
+of which personal key receives your encrypted copy. omaPGP lets you encrypt,
+decrypt, sign, and verify PGP text from the Omarchy bar using your local GnuPG
+keyring.
+
+### What changed
+
+- **Clipboard.** The panel keeps no copy history. Cut keeps the original text
+  until the clipboard write succeeds. Public-key copy reports the outcome of the
+  write.
+- **Key verification.** omaPGP certifies the exact GnuPG identity and confirms
+  its status after reloading the keyring.
+- **Drafts.** Edits that exceed 64 KiB preserve the last valid draft, including
+  when a multibyte replacement leaves the character count unchanged.
+- **Encrypt to myself.** See which personal key gets a copy and choose one when
+  several are available. Encryption-only personal keys are eligible.
+
+### Update on Omarchy
+
+```sh
+omarchy plugin update io.github.yaeloss.omapgp
+```
+
+The automated tests passed on Omarchy 4.5.0-3. Live Wayland clipboard expiry,
+popup focus, and interactive pinentry cancellation still need desktop checks.
+
+## 0.1.2 development snapshot
 
 ### Security
 
 - Read GnuPG status lines from a dedicated pipe instead of stderr, and refuse
   arguments that would merge status with diagnostics. This closes the
   status-line impersonation class behind CVE-2018-12020 for this plugin.
-- Route Copy/Cut in the draft and key-import editors through the guarded,
-  sensitive clipboard path; they previously used Qt's built-in action.
+- Route Copy and Cut in the draft and key-import editors through the sensitive
+  clipboard path.
 - Escape line/paragraph separators, invisible direction marks, and zero-width
-  characters in displayed key names, and sign the same sanitised identity that
-  is shown.
+  characters in displayed key names.
 - Report an abnormal GnuPG exit after text was displayed as a warning instead of
   a silent success, and keep genuinely decrypted text visible alongside it.
 - Report failed `wl-copy` writes instead of claiming the text was copied.
 - Refuse a relative `gnupgHome` setting instead of creating a keyring relative to
   the shell's working directory.
-- Name `python3`, `wl-copy`, `wl-paste`, and `sh` by absolute path alongside gpg.
 
 ### Fixed
 
 - The worker failed with a permission error when stdin was a regular file or
   `/dev/null`; it now falls back to a plain read.
-- Editing past the 64 KiB limit wiped the whole draft. The rejected edit is now
-  reverted and the existing draft is kept.
+- Reject edits that exceed the editor's character limit while keeping the draft.
 
 ### Tests
 
@@ -69,4 +92,4 @@ was not a published release.
 
 Real Wayland popup/pinentry focus, desktop clipboard integration, and any claimed
 hardware-token configuration. Automated tests use disposable keys and a synthetic
-pinentry. See [SECURITY.md](SECURITY.md#before-the-first-release).
+pinentry. See [SECURITY.md](SECURITY.md#release-checklist).

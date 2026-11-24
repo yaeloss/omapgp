@@ -30,8 +30,7 @@ BorderSurface {
 
   signal submitRequested()
   signal inputRejected(string message)
-  // text, and whether the source selection should be deleted.
-  signal copyRequested(string text, bool cut)
+  signal copyRequested(string text, bool cut, var completed)
 
   function clear() { pasteReader.cancel(); _revision++; _lastText = ""; area.text = "" }
   function _rejectEdit(message) {
@@ -50,9 +49,19 @@ BorderSurface {
   function copySelection(cut) {
     var selection = selectedText()
     if (selection === "") return
-    root.copyRequested(selection, cut)
-    if (cut) area.remove(area.selectionStart, area.selectionEnd)
-    area.deselect()
+    if (!cut) {
+      root.copyRequested(selection, false, null)
+      area.deselect()
+      return
+    }
+    var revision = root._revision
+    var start = area.selectionStart
+    var end = area.selectionEnd
+    root.copyRequested(selection, true, function() {
+      if (root.readOnly || revision !== root._revision || start !== area.selectionStart || end !== area.selectionEnd) return false
+      area.remove(start, end)
+      return true
+    })
   }
   function pasteClipboard(primary, replaceAll) {
     if (readOnly || pasteReader.running) return
@@ -99,7 +108,7 @@ BorderSurface {
       textFormat: TextEdit.PlainText
       wrapMode: TextEdit.Wrap
       selectByMouse: true
-      persistentSelection: false
+      persistentSelection: true
       inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
       color: root.foreground
       selectionColor: Style.selectionFillFor(root.foreground, root.accent)
@@ -116,16 +125,9 @@ BorderSurface {
       onTextChanged: {
         var limit = "Input is too large (maximum 64 KiB of UTF-8 text)."
         // Revert just this edit instead of discarding the whole draft.
-        if (text.length > Model.MAX_INPUT_CHARS) { root._rejectEdit(limit); return }
-        if (text.length <= root._lastText.length) {
-          // Shorter than before: a deletion, which never needs the byte check.
-          root._lastText = text
-          root._revision++
-          return
-        }
+        if (text.length > Model.MAX_INPUT_CHARS || Model.inputTooLarge(text)) { root._rejectEdit(limit); return }
         root._lastText = text
         root._revision++
-        if (Model.inputTooLarge(text)) root._rejectEdit(limit)
       }
 
       ContextMenu.menu: Controls.Menu {

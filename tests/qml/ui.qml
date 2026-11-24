@@ -15,10 +15,11 @@ ShellRoot {
   // desktop clipboard.
   function stubClipboard(panel) {
     var clipboard = find(panel, "pgpClipboard")
-    clipboard.override = function(text, sensitive, notice) {
-      clipboard.calls = clipboard.calls.concat([[text, sensitive, notice]])
+    var calls = []
+    clipboard.override = function(text, sensitive, completed) {
+      calls.push({ text: text, sensitive: sensitive, complete: completed })
     }
-    return clipboard
+    return { clipboard: clipboard, calls: calls }
   }
   function find(object, name, visited) {
     if (!object) return null
@@ -42,6 +43,21 @@ ShellRoot {
     onLoaded: {
       item.settings = { gnupgHome: Quickshell.env("OMAPGP_TEST_HOME") }
       Qt.callLater(root.runChecks)
+    }
+  }
+  Timer {
+    id: waitForClipboardFailure
+    interval: 50
+    repeat: true
+    onTriggered: {
+      var p = panelLoader.item
+      if (find(p, "pgpClipboard").pendingCopy) return
+      stop()
+      check(find(p, "pgpWriteInput").text === "clipboard fixture" && p.copyNotice.indexOf("Could not copy") !== -1,
+            "the real clipboard writer reports an unavailable Wayland socket without removing text")
+      p.wipe()
+      console.log(failures === 0 ? "ui harness passed" : "ui harness FAILED")
+      Qt.exit(failures === 0 ? 0 : 1)
     }
   }
   function runChecks() {
@@ -80,6 +96,21 @@ ShellRoot {
     p.writeOutput = "old ciphertext"
     p.encryptToSelf = !p.encryptToSelf
     check(p.writeOutput === "", "self-recipient change clears generated output")
+    p.setMode("write")
+    p.encryptToSelf = true
+    p.keysLoaded = true
+    var ownOne = { fingerprint: "A".repeat(40), name: "First", usable: true, canEncrypt: true, canDecrypt: true }
+    var ownTwo = { fingerprint: "B".repeat(40), name: "Second", usable: true, canEncrypt: true, canDecrypt: true }
+    var picker = find(p, "pgpSelfKeyPicker")
+    p.keys = [ownOne]
+    check(p.selfKey === ownOne, "a single personal encryption key is selected automatically")
+    p.keys = [ownOne, ownTwo]
+    check(p.selfKey === null && picker.options.length === 3, "multiple personal encryption keys require a choice")
+    p.writeOutput = "old ciphertext"
+    picker.changed(ownTwo.fingerprint)
+    check(p.selfKey === ownTwo && p.writeOutput === "", "changing the personal key clears generated output")
+    p.keys = [ownOne]
+    check(p.selfKey === null, "an unavailable choice does not switch silently to another key")
     p.writeOutput = "old ciphertext"
     input.text = "changed"
     check(p.writeOutput === "", "draft edit clears generated output")
@@ -88,28 +119,62 @@ ShellRoot {
     input.text = "selection fixture"
     input.textArea.select(0, 9)
     input.copySelection(false)
-    check(clipboard.calls.length === 1 && clipboard.calls[0][0] === "selection",
+    check(clipboard.calls.length === 1 && clipboard.calls[0].text === "selection",
           "editor copy hands the selection to the guarded clipboard path")
-    check(clipboard.calls.length === 1 && clipboard.calls[0][1] === true,
+    check(clipboard.calls.length === 1 && clipboard.calls[0].sensitive,
           "editor copy is marked sensitive")
+    clipboard.calls[0].complete(true)
     check(input.text === "selection fixture", "copying does not alter the draft")
     input.textArea.select(0, 9)
     input.copySelection(true)
-    check(clipboard.calls.length === 2 && input.text === " fixture",
-          "cut goes through the same guarded path and removes the selection")
+    check(clipboard.calls.length === 2 && input.text === "selection fixture", "cut waits for clipboard completion")
+    input.copySelection(true)
+    check(clipboard.calls.length === 2 && input.text === "selection fixture" && p.copyNotice.indexOf("still finishing") !== -1,
+          "a busy clipboard leaves the selection intact")
+    clipboard.calls[1].complete(false)
+    check(input.text === "selection fixture" && p.copyNotice.indexOf("Could not copy") !== -1, "a failed cut keeps the draft")
+    input.copySelection(true)
+    input.textArea.select(10, 17)
+    clipboard.calls[2].complete(true)
+    check(input.text === "selection fixture" && p.copyNotice.indexOf("Copied the selection") !== -1,
+          "completion leaves a newer selection intact")
+    input.textArea.select(0, 9)
+    input.copySelection(true)
+    clipboard.calls[3].complete(true)
+    check(input.text === " fixture" && p.copyNotice.indexOf("Moved the selection") !== -1, "successful cut removes the original selection")
+    clipboard.clipboard.copy("public key fixture", false, "Copied the public key.")
+    check(p.copyNotice.indexOf("public key") === -1, "public-key copy does not report success prematurely")
+    clipboard.calls[4].complete(false)
+    check(p.copyNotice.indexOf("Could not copy") !== -1, "a failed public-key copy reports the failure")
 
     // Typing past the limit keeps the draft instead of wiping it.
     input.text = "preserved draft"
     var before = input.text
     input.text = before + "x".repeat(Model.MAX_INPUT_CHARS + 1)
     check(input.text === before, "oversized edit reverts and keeps the existing draft")
+    input.text = "é".repeat(Model.MAX_INPUT_BYTES / 2)
+    check(input.text.length === Model.MAX_INPUT_BYTES / 2, "a multibyte draft exactly at the limit is accepted")
+    input.text += "é"
+    check(input.text.length === Model.MAX_INPUT_BYTES / 2, "a multibyte edit past the byte limit is reverted")
+    input.text = "€" + input.text.slice(1)
+    check(input.text.charAt(0) === "é", "a same-length replacement past the byte limit is reverted")
 
     p.readPlaintext = "fixture"
     output.text = "fixture"
     p.clearReadResult()
     check(p.readPlaintext === "" && output.text === "", "read-result invalidation clears all visible copies")
+    input.text = "pending selection"
+    input.textArea.select(0, 7)
+    input.copySelection(true)
     p.wipe()
-    console.log(failures === 0 ? "ui harness passed" : "ui harness FAILED")
-    Qt.exit(failures === 0 ? 0 : 1)
+    clipboard.calls[5].complete(true)
+    check(input.text === "" && p.copyNotice === "" && clipboard.clipboard.pendingCopy === null,
+          "closing drops the edit callback and clipboard notice")
+
+    clipboard.clipboard.override = null
+    input.text = "clipboard fixture"
+    input.textArea.select(0, 9)
+    input.copySelection(true)
+    waitForClipboardFailure.start()
   }
 }

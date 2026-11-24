@@ -39,6 +39,7 @@ Panel {
   property var recipients: []
   property string signer: ""
   property bool encryptToSelf: true
+  property string selfKeyFingerprint: ""
   property bool allowUnverified: false
   property string writeOutput: ""
   property string writeError: ""
@@ -72,11 +73,13 @@ Panel {
   onRecipientsChanged: invalidateWrite()
   onSignerChanged: invalidateWrite()
   onEncryptToSelfChanged: invalidateWrite()
+  onSelfKeyFingerprintChanged: invalidateWrite()
   onAllowUnverifiedChanged: invalidateWrite()
   onKeysChanged: invalidateWrite()
   onHomedirChanged: {
     if (!_ready) return
     wipe()
+    selfKeyFingerprint = ""
     keys = []
     keysLoaded = false
     if (opened) refreshKeys()
@@ -84,11 +87,10 @@ Panel {
 
   readonly property var encryptKeys: Model.encryptionKeys(root.keys)
   readonly property var signKeys: Model.signingKeys(root.keys)
+  readonly property var selfKeys: Model.personalEncryptionKeys(root.keys)
   readonly property var selfKey: {
-    var own = root.signer ? Model.findKey(root.keys, root.signer) : null
-    if (own && own.canEncrypt) return own
-    for (var i = 0; i < root.signKeys.length; i++) if (root.signKeys[i].canEncrypt) return root.signKeys[i]
-    return null
+    if (root.selfKeyFingerprint) return Model.findKey(root.selfKeys, root.selfKeyFingerprint)
+    return root.selfKeys.length === 1 ? root.selfKeys[0] : null
   }
   readonly property var unverifiedRecipients: {
     var out = []
@@ -219,12 +221,13 @@ Panel {
     })
   }
 
-  function refreshKeys() {
+  function refreshKeys(completed) {
     if (keyList.running) return
     if (homedirError) {
       root.keys = []
       root.keysLoaded = false
       root.keysError = homedirError
+      if (completed) completed(false)
       return
     }
     var epoch = ++_keyEpoch
@@ -242,12 +245,16 @@ Panel {
     } })
     var i = 0
     var next = function() {
-      if (i >= steps.length) return
+      if (i >= steps.length) {
+        if (completed) completed(true)
+        return
+      }
       var step = steps[i++]
       keyList.start(step.args, null, function(r) {
         if (epoch !== root._keyEpoch || !root.opened) return
         if (r.errorCode || r.exitCode !== 0) {
           root.keysError = Model.workerFailure(r) || "Could not read the GnuPG keyring" + (root.homedir ? " in " + root.homedir : "") + "."
+          if (completed) completed(false)
           return
         }
         step.use(r)
@@ -307,6 +314,11 @@ Panel {
     }
     if (unverifiedRecipients.length > 0 && !allowUnverified) {
       writeError = "Confirm the unverified recipients below, or verify them under Keys."
+      return
+    }
+    if (encryptToSelf && !selfKey && (selfKeys.length > 0 || selfKeyFingerprint)) {
+      writeError = selfKeys.length > 0 ? "Choose a personal key for your copy, or turn off Encrypt to myself too."
+        : "Your personal encryption key is unavailable. Turn off Encrypt to myself too to continue."
       return
     }
     var to = recipients.slice()
@@ -372,10 +384,11 @@ Panel {
   function copyPublicKey(key) {
     if (busy) return
     keysNotice = ""
+    copyNotice = ""
     runGpg(Model.exportArgs(root.homedir, key.fingerprint), null, function(r) {
       if (r.exitCode === 0 && r.stdout.indexOf("-----BEGIN PGP PUBLIC KEY BLOCK-----") !== -1) {
-        if (clipboard.copy(r.stdout, false, "Copied the public key for " + Model.keyLabel(key) + "."))
-          root.keysNotice = "Copied the public key for " + Model.keyLabel(key) + "."
+        if (!clipboard.copy(r.stdout, false, "Copied the public key for " + Model.keyLabel(key) + "."))
+          root.copyNotice = "Another clipboard operation is still finishing. Try again in a moment."
       } else {
         root.keysNotice = Model.workerFailure(r) || "Could not export that key."
       }
@@ -386,12 +399,20 @@ Panel {
     if (busy || !key || !key.uid) return
     keysNotice = ""
     var signWith = signer || (signKeys.length > 0 ? signKeys[0].fingerprint : "")
-    runGpg(Model.lsignArgs(root.homedir, key.fingerprint, signWith, key.displayUid || key.uid), null, function(r) {
+    runGpg(Model.lsignArgs(root.homedir, key.fingerprint, signWith, key.uid), null, function(r) {
       root.verifyTarget = null
-      root.keysNotice = r.exitCode === 0
-        ? Model.keyLabel(key) + " is now marked as verified on this computer."
-        : Model.workerFailure(r) || "Could not verify that identity (cancelled, or your key needs its passphrase)."
-      root.refreshKeys()
+      if (r.exitCode !== 0 || r.errorCode) {
+        root.keysNotice = Model.workerFailure(r) || "Could not verify that identity (cancelled, or your key needs its passphrase)."
+        root.refreshKeys()
+        return
+      }
+      root.refreshKeys(function(loaded) {
+        var refreshedKey = loaded ? Model.findKey(root.keys, key.fingerprint) : null
+        if (Model.isVerifiedUid(refreshedKey, key.uid))
+          root.keysNotice = key.displayUid + " is now marked as verified on this computer."
+        else
+          root.keysNotice = "Could not confirm that this identity was verified."
+      })
     })
   }
 
@@ -419,12 +440,11 @@ Panel {
     if (!copied) copyNotice = "Another clipboard operation is still finishing. Try again in a moment."
   }
 
-  // Editors hold drafts and pasted keys, so their Copy/Cut use the same
-  // guarded path rather than the control's built-in clipboard action.
-  function copyEditorText(text, cut) {
+  function copyEditorText(text, cut, completed) {
     if (text === "") return
     copyNotice = ""
-    if (!clipboard.copy(text, true, copyTimeoutNotice(cut ? "Moved the selection to the clipboard." : "Copied the selection.")))
+    var notice = copyTimeoutNotice(cut ? "Moved the selection to the clipboard." : "Copied the selection.")
+    if (!clipboard.copy(text, true, notice, completed))
       copyNotice = "Another clipboard operation is still finishing. Try again in a moment."
   }
 
@@ -450,36 +470,73 @@ Panel {
     id: clipboard
     objectName: "pgpClipboard"
 
-    property var calls: []
-    // Test hook: the QML harness records copies instead of touching the real
-    // desktop clipboard. Null in normal use.
+    // The UI harness supplies a writer so it can test completion without Wayland.
     property var override: null
-
+    property var pendingCopy: null
     property string pendingHash: ""
-    property string pendingText: ""
-    property bool pendingSensitive: false
-    property string pendingNotice: ""
 
     function dropPayload() {
+      if (!pendingCopy) return
+      pendingCopy.completed = null
+      pendingCopy.notice = ""
+      // A write already handed to wl-copy still needs its expiry timer.
+      if (copyProc.payload === "") return
       copyProc.payload = ""
+      pendingCopy = null
+      copyDeadline.stop()
       if (copyProc.running) copyProc.running = false
-      pendingText = ""
-      pendingNotice = ""
-      pendingSensitive = false
     }
 
-    function copy(text, sensitive, notice) {
-      if (text === "" || copyProc.running) return false
-      if (override) { override(text, sensitive, notice || ""); return true }
-      calls.push([text, sensitive, notice || ""])
+    function copy(text, sensitive, notice, completed) {
+      if (text === "" || pendingCopy || copyProc.running) return false
+      var request = { hash: sensitive ? Qt.md5(text) : "", notice: notice, completed: completed || null }
+      pendingCopy = request
+      if (override) {
+        override(text, sensitive, function(success) {
+          if (clipboard.pendingCopy === request) clipboard.finish(success)
+        })
+        return true
+      }
       copyProc.payload = text
-      copyProc.command = sensitive ? ["wl-copy", "--sensitive"] : ["wl-copy"]
+      copyProc.command = sensitive ? ["/usr/bin/wl-copy", "--sensitive"] : ["/usr/bin/wl-copy"]
       copyProc.stdinEnabled = true
-      clipboard.pendingText = text
-      clipboard.pendingSensitive = sensitive
-      clipboard.pendingNotice = notice || "Copied to the clipboard."
+      copyDeadline.restart()
       copyProc.running = true
       return true
+    }
+
+    function finish(success) {
+      var request = pendingCopy
+      if (!request) return
+      pendingCopy = null
+      copyDeadline.stop()
+      copyProc.payload = ""
+      if (success) {
+        clearTimer.stop()
+        pendingHash = ""
+        if (request.hash && root.copyClearSeconds > 0) {
+          pendingHash = request.hash
+          clearTimer.interval = root.copyClearSeconds * 1000
+          clearTimer.restart()
+        }
+      }
+      if (!request.notice) return
+      if (!success) {
+        root.copyNotice = "Could not copy to the clipboard. Is wl-clipboard installed?"
+      } else if (request.completed && !request.completed()) {
+        root.copyNotice = root.copyTimeoutNotice("Copied the selection.")
+      } else {
+        root.copyNotice = request.notice
+      }
+    }
+
+    Timer {
+      id: copyDeadline
+      interval: 5000
+      onTriggered: {
+        clipboard.finish(false)
+        if (copyProc.running) copyProc.running = false
+      }
     }
 
     Process {
@@ -490,22 +547,7 @@ Panel {
         payload = ""
         stdinEnabled = false
       }
-      // wl-copy forks on success, so a still-running process here is a failure.
-      onExited: {
-        if (exitCode === 0) {
-          root.copyNotice = clipboard.pendingNotice
-          if (clipboard.pendingSensitive && root.copyClearSeconds > 0) {
-            clipboard.pendingHash = Qt.md5(clipboard.pendingText)
-            clearTimer.interval = root.copyClearSeconds * 1000
-            clearTimer.restart()
-          }
-        } else {
-          root.copyNotice = "Could not copy to the clipboard. Is wl-clipboard installed?"
-        }
-        clipboard.pendingText = ""
-        clipboard.pendingNotice = ""
-        clipboard.pendingSensitive = false
-      }
+      onExited: function(exitCode, exitStatus) { clipboard.finish(exitCode === 0 && exitStatus === 0) }
     }
 
     Timer {
@@ -667,6 +709,7 @@ Panel {
               width: parent.width
               height: Style.space(140)
               placeholderText: "Paste a PGP message or signed text, then press Ctrl+Enter"
+              onCopyRequested: function(text, cut, completed) { root.copyEditorText(text, cut, completed) }
               onSubmitRequested: root.decrypt()
               onTextChanged: root.invalidateRead()
               onInputRejected: function(message) { root.readError = message }
@@ -756,11 +799,10 @@ Panel {
               Caption {
                 anchors.verticalCenter: parent.verticalCenter
                 width: Style.space(300)
-                text: root.copyArmed
-                  ? "Other apps and clipboard history can read the clipboard. Click again to copy."
-                  : root.copyNotice
+                text: root.copyArmed ? "Other apps and clipboard history can read the clipboard. Click again to copy." : ""
               }
             }
+            Caption { width: parent.width; visible: text !== ""; text: root.copyNotice }
           }
 
           // ---- Write -----------------------------------------------------------
@@ -808,12 +850,33 @@ Panel {
             Toggle {
               enabled: !root.busy
               width: parent.width
-              visible: root.selfKey !== null
+              visible: root.keysLoaded && (root.selfKeys.length > 0 || root.selfKeyFingerprint !== "")
               label: "Encrypt to myself too"
-              description: root.selfKey ? "So you can read it later with " + Model.keyLabel(root.selfKey) + "." : ""
+              description: root.selfKey ? "Read it later with " + Model.keyLabel(root.selfKey) + "." : ""
               checked: root.encryptToSelf
               fontFamily: root.fontFamily
               onClicked: root.encryptToSelf = !root.encryptToSelf
+            }
+
+            Dropdown {
+              objectName: "pgpSelfKeyPicker"
+              enabled: !root.busy
+              visible: root.keysLoaded && root.encryptToSelf && root.selfKeys.length > 0 &&
+                       (root.selfKeys.length > 1 || !root.selfKey)
+              width: parent.width
+              label: "Personal encryption key"
+              fontFamily: root.fontFamily
+              value: root.selfKey ? root.selfKey.fingerprint : ""
+              options: [{ value: "", label: "Choose a personal key" }].concat(root.selfKeys.map(function(key) {
+                return { value: key.fingerprint, label: Model.keyLabel(key) + " · " + Model.shortFingerprint(key.fingerprint) }
+              }))
+              onChanged: function(value) { root.selfKeyFingerprint = value }
+            }
+
+            Caption {
+              visible: root.keysLoaded && root.selfKeys.length === 0
+              width: parent.width
+              text: "No personal encryption key is available. Import your own key pair under Keys to keep a readable copy."
             }
 
             Column {
@@ -843,7 +906,7 @@ Panel {
             PgpTextArea {
               id: writeInput
               objectName: "pgpWriteInput"
-              onCopyRequested: function(text, cut) { root.copyEditorText(text, cut) }
+              onCopyRequested: function(text, cut, completed) { root.copyEditorText(text, cut, completed) }
               enabled: !root.busy
               width: parent.width
               height: Style.space(140)
@@ -1006,7 +1069,7 @@ Panel {
                 Message {
                   width: parent.width
                   text: root.verifyTarget
-                    ? "Ask " + Model.keyLabel(root.verifyTarget) + " to read their fingerprint to you in person, by phone, or another trusted channel. Only continue if every character matches:"
+                    ? "Ask " + root.verifyTarget.displayUid + " to read their fingerprint to you in person, by phone, or another trusted channel. Only continue if every character matches:"
                     : ""
                 }
 
@@ -1050,7 +1113,7 @@ Panel {
 
             PgpTextArea {
               id: importInput
-              onCopyRequested: function(text, cut) { root.copyEditorText(text, cut) }
+              onCopyRequested: function(text, cut, completed) { root.copyEditorText(text, cut, completed) }
               enabled: !root.busy
               width: parent.width
               height: Style.space(100)

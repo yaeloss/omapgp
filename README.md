@@ -7,8 +7,7 @@ decrypt, sign, and verify PGP text messages without leaving your desktop. It
 uses your Omarchy theme and fonts and your local GnuPG keyring.
 
 > Independent community plugin, not made or endorsed by Omarchy or GnuPG.
-> Early-stage software: see [SECURITY.md](SECURITY.md) for its threat model and
-> the manual checks still needed before the first release.
+> See [SECURITY.md](SECURITY.md) for the threat model and release checklist.
 
 - **Read**: paste a PGP message or signed text to decrypt it and check who signed it.
 - **Write**: encrypt to one or more people, optionally sign, or clearsign without encrypting.
@@ -44,8 +43,9 @@ cryptography of its own.
   if it is still there. Output views deliberately have no text-selection or
   built-in Copy action. Copy and Cut in the editable boxes — which hold your
   draft and any pasted private key — are routed through the same guarded
-  clipboard path instead of Qt's built-in actions. Sensitive hints are
-  advisory: other applications and clipboard managers may ignore them.
+  clipboard path. Cut removes the original selection only after the clipboard
+  write succeeds. The panel keeps no copy history. Clipboard managers may
+  ignore the sensitive hint.
 - The plugin reports failed clipboard writes instead of claiming success, and it
   shows a warning when GnuPG exits abnormally after displaying text, rather than
   presenting a partial result as complete.
@@ -90,8 +90,7 @@ placed it in clipboard history; omaPGP cannot remove another app's saved copies.
 
 ## Install
 
-Install from the repository's default branch (a development build until a
-release is tagged):
+Install from the repository's default branch:
 
 ```sh
 omarchy plugin add https://github.com/yaeloss/omapgp.git --enable
@@ -125,6 +124,14 @@ pair from elsewhere, paste its ASCII-armored private key block into
 Existing passphrase protection is preserved; importing an unprotected private
 key does not add a passphrase.
 
+### Keeping a copy you can decrypt
+
+On **Write**, **Encrypt to myself too** adds your personal encryption key to the
+recipients. If there is one eligible key, the panel shows it below the toggle.
+If there are several, choose the one you want to use. Encryption-only keys are
+eligible when the keyring has the private encryption key or a reference to it
+on a hardware token.
+
 ### Verifying people
 
 A key you've imported could belong to anyone. Before trusting it, compare its
@@ -135,8 +142,9 @@ tools can explicitly export local signatures.
 
 Verification belongs to a particular identity on a particular key. A newly
 added identity is not automatically verified because another identity on that
-key is certified. Signature results show the full key fingerprint and distinguish
-a valid signature from a verified identity.
+key is certified. The panel checks the exact identity again after reloading the
+keyring. Signature results show the full key fingerprint and distinguish a
+valid signature from a verified identity.
 
 ## Settings
 
