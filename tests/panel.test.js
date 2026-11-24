@@ -27,12 +27,12 @@ function context() {
     copyTimeoutNotice(text) { return text + " (clears in 45s)" },
     recipients:[FPR], signer:"", encryptToSelf:false, selfKey:null, selfKeys:[], selfKeyFingerprint:"",
     keysLoaded:true, keys:[{fingerprint:FPR, keyId:FPR.slice(-16), usable:true, canEncrypt:true}],
-    signKeys:[], keysNotice:"", verifyTarget:null,
+    signKeys:[], certKeys:[{fingerprint:"C".repeat(40)}], keysNotice:"", verifyTarget:null, fingerprintCheck:"empty",
     unverifiedRecipients:[], allowUnverified:false, writeOutput:"", writeError:"", writeOutputKind:"",
-    writeOutputSensitive:false, writeCopyArmed:false,
+    writeOutputSensitive:false,
     writeInput:{text:"Draft fixture"}, readInput:{text:"-----BEGIN PGP MESSAGE-----"},
     writeOutputArea:{text:"", clear(){this.text=""}}, readOutput:{text:"", clear(){this.text=""}},
-    copyArmTimer:{restart(){}}, clipboard:{calls:[], copy(...args){this.calls.push(args);return true}},
+    clipboard:{calls:[], copy(...args){this.calls.push(args);return true}},
     gpg:{running:false, start(args, input, callback){this.running=true;pending=callback;c.sentArgs=args;return true},
          cancel(){this.running=false;pending=null}},
     complete(result){const cb=pending;this.gpg.running=false;pending=null;cb(result)},
@@ -81,6 +81,15 @@ missingStatus.complete(encryption)
 assert.equal(missingStatus.writeOutput, "")
 assert.notEqual(missingStatus.writeError, "")
 
+const certifiedRecipient = context()
+certifiedRecipient.keys[0].locallyVerified = true
+certifiedRecipient.encrypt()
+assert.ok(certifiedRecipient.sentArgs.includes("--trust-model"), "a locally verified recipient can encrypt without changing ownertrust")
+certifiedRecipient.cancelAction()
+certifiedRecipient.unverifiedRecipients = [{ fingerprint: "B".repeat(40) }]
+certifiedRecipient.encrypt()
+assert.equal(certifiedRecipient.gpg.running, false, "local verification never approves another unverified recipient")
+
 const closed = context()
 closed.encrypt()
 const delayed = closed.pending()
@@ -93,11 +102,9 @@ const signedCopy = context()
 signedCopy.writeOutput = "signed plaintext fixture"
 signedCopy.writeOutputSensitive = true
 signedCopy.copyWriteOutput()
-assert.equal(signedCopy.clipboard.calls.length, 0)
-signedCopy.copyWriteOutput()
 assert.deepEqual(signedCopy.clipboard.calls, [["signed plaintext fixture", true, "Copied the signed message. (clears in 45s)"]])
 
-// Ciphertext is public, so copying it needs no confirmation or expiry.
+// Ciphertext does not need clipboard expiry.
 const ciphertextCopy = context()
 ciphertextCopy.writeOutput = "-----BEGIN PGP MESSAGE-----\nfixture"
 ciphertextCopy.writeOutputSensitive = false
@@ -141,7 +148,13 @@ selfCopy.selfKeyFingerprint = BOB
 selfCopy.selfKey = secondKey
 selfCopy.encrypt()
 assert.deepEqual(Array.from(selfCopy.sentArgs.slice(-4)), ["--recipient", FPR, "--recipient", BOB])
+assert.ok(selfCopy.sentArgs.includes("--trust-model"), "an untrusted personal copy can use the request-only override")
 selfCopy.cancelAction()
+selfCopy.unverifiedRecipients = [selfCopy.keys[0]]
+selfCopy.encrypt()
+assert.match(selfCopy.writeError, /Confirm the unverified recipients/)
+assert.equal(selfCopy.gpg.running, false, "the same override cannot implicitly approve an unverified contact")
+selfCopy.unverifiedRecipients = []
 selfCopy.selfKeys = []
 selfCopy.selfKey = null
 selfCopy.encrypt()
@@ -150,15 +163,30 @@ assert.equal(selfCopy.gpg.running, false)
 selfCopy.encryptToSelf = false
 selfCopy.encrypt()
 assert.deepEqual(Array.from(selfCopy.sentArgs.slice(-2)), ["--recipient", FPR])
+assert.ok(!selfCopy.sentArgs.includes("--trust-model"))
+
+const toMyself = context()
+toMyself.keys[0].canDecrypt = true
+toMyself.encrypt()
+assert.ok(toMyself.sentArgs.includes("--trust-model"), "a directly selected personal key can receive its own copy")
 
 const uid = "Alice  Test <alice@example.invalid>"
 const key = {fingerprint:FPR, uid, displayUid:Model.displayIdentity(uid), usable:true}
+const mismatched = context()
+mismatched.fingerprintCheck = "mismatch"
+mismatched.verifyKey(key)
+assert.equal(mismatched.gpg.running, false)
+const noCertifyingKey = context()
+noCertifyingKey.certKeys = []
+noCertifyingKey.verifyKey(key)
+assert.equal(noCertifyingKey.gpg.running, false)
 for (const [loaded, validity, expected] of [[false, "f", /Could not confirm/], [true, "-", /Could not confirm/], [true, "f", /marked as verified/]]) {
   const verification = context()
   let finishRefresh
   verification.refreshKeys = callback => { finishRefresh = callback }
   verification.verifyKey(key)
   assert.equal(verification.sentArgs.at(-1), "=" + uid)
+  assert.ok(verification.sentArgs.includes(verification.certKeys[0].fingerprint))
   verification.complete({exitCode:0})
   assert.equal(verification.keysNotice, "")
   verification.keys = [{...key, uids:[{text:key.displayUid, validity:"f"}, {text:uid, validity}]}]

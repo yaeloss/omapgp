@@ -79,7 +79,10 @@ def run(command, payload, deadline, output_limit=MAX_OUTPUT, progress=None, stat
     read_fd = write_fd = None
     if status_pipe:
         read_fd, write_fd = os.pipe()
-        command = list(command) + ["--status-fd", str(write_fd)]
+        command = list(command)
+        # Quick certification ends option parsing before the fingerprint and UID.
+        end_of_options = command.index("--") if "--" in command else len(command)
+        command[end_of_options:end_of_options] = ["--status-fd", str(write_fd)]
     try:
         child = subprocess.Popen(
             command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -189,6 +192,30 @@ def run(command, payload, deadline, output_limit=MAX_OUTPUT, progress=None, stat
         pending.clear()
 
 
+# Clipboard managers can restore ASCII armor using libmagic's OpenPGP MIME
+# types even when the original clipboard entry was plain text.
+PGP_CLIPBOARD_TYPES = {
+    "application/pgp-encrypted": ("-----BEGIN PGP MESSAGE-----",),
+    "application/pgp-keys": ("-----BEGIN PGP PUBLIC KEY BLOCK-----",
+                             "-----BEGIN PGP PRIVATE KEY BLOCK-----"),
+    "application/pgp-signature": ("-----BEGIN PGP SIGNATURE-----",),
+}
+
+
+def read_clipboard(args, payload, deadline):
+    command = ["/usr/bin/wl-paste", *args]
+    text = run(command + ["--type", "text"], payload, deadline, output_limit=MAX_INPUT)
+    if text["exitCode"] == 0:
+        return text
+
+    for mime, headers in PGP_CLIPBOARD_TYPES.items():
+        result = run(command + ["--type", mime], payload, deadline, output_limit=MAX_INPUT)
+        first_line = result["stdout"].partition("\n")[0].rstrip("\r")
+        if result["exitCode"] == 0 and first_line in headers and "\0" not in result["stdout"]:
+            return result
+    return text
+
+
 def main():
     # Never propagate the worker's CPU/address-space budgets to a long-lived
     # shared gpg-agent. Launch/check the agent before applying those budgets;
@@ -227,8 +254,7 @@ def main():
                          status_pipe=True)
         elif args in (["wl-paste", "--no-newline"], ["wl-paste", "--primary", "--no-newline"]):
             limits()
-            result = run(["/usr/bin/wl-paste"] + args[1:], payload, deadline,
-                         output_limit=MAX_INPUT)
+            result = read_clipboard(args[1:], payload, deadline)
         else:
             raise WorkerError("invalid-command")
     except WorkerError as exc:

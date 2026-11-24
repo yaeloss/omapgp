@@ -41,9 +41,14 @@ function expandHome(path, home) {
   return path
 }
 
-function listKeysArgs(homedir, secret) {
-  return gpgArgs(homedir, ["--with-colons", "--fixed-list-mode",
-    secret ? "--list-secret-keys" : "--list-keys"])
+function listKeysArgs(homedir, secret, checkCertifications) {
+  var args = ["--with-colons", "--fixed-list-mode"]
+  if (!secret && checkCertifications) {
+    // Disable the signature cache so the checked records include full issuer fingerprints.
+    args.push("--no-sig-cache", "--with-sig-check", "--list-options", "show-sig-expire")
+  }
+  args.push(secret ? "--list-secret-keys" : "--list-keys")
+  return gpgArgs(homedir, args)
 }
 
 // Fingerprints are the only key identifiers we hand to gpg. A full 40/64-hex
@@ -85,7 +90,7 @@ function exportArgs(homedir, fpr) {
 }
 
 function lsignArgs(homedir, fpr, signer, uid) {
-  if (!isFingerprint(fpr) || typeof uid !== "string" || uid === "") return null
+  if (!isFingerprint(fpr) || typeof uid !== "string" || uid === "" || uid.indexOf("\x00") !== -1) return null
   var args = []
   if (signer) {
     if (!isFingerprint(signer)) return null
@@ -99,8 +104,9 @@ function lsignArgs(homedir, fpr, signer, uid) {
 // --- key listing ------------------------------------------------------------
 
 function unescapeColon(value) {
-  return String(value || "").replace(/\\x([0-9a-fA-F]{2})/g, function(_, hex) {
-    return String.fromCharCode(parseInt(hex, 16))
+  var escapes = { "0": "\0", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v" }
+  return String(value || "").replace(/\\(?:x([0-9a-fA-F]{2})|([0bfnrtv]))/g, function(_, hex, escape) {
+    return hex ? String.fromCharCode(parseInt(hex, 16)) : escapes[escape]
   })
 }
 
@@ -120,7 +126,7 @@ function parseKeys(publicColons, secretColons) {
   for (var s = 0; s < lines.length; s++) {
     var f = lines[s].split(":")
     if (f[0] === "sec") {
-      secretKey = { canDecrypt: false }
+      secretKey = { canDecrypt: false, canCertify: f[14] !== "#" && (f[11] || "").indexOf("c") !== -1 }
       expectSecretFpr = true
     } else if (f[0] === "fpr" && expectSecretFpr) {
       secret[f[9]] = secretKey
@@ -136,12 +142,16 @@ function parseKeys(publicColons, secretColons) {
 
   var keys = []
   var current = null
+  var currentUid = null
+  var certifiers = {}
+  var now = Date.now() / 1000
   var expectPrimaryFpr = false
   lines = String(publicColons || "").split("\n")
   for (var i = 0; i < lines.length; i++) {
     var fields = lines[i].split(":")
     var type = fields[0]
     if (type === "pub") {
+      currentUid = null
       var caps = fields[11] || ""
       current = {
         fingerprint: "",
@@ -154,7 +164,8 @@ function parseKeys(publicColons, secretColons) {
         disabled: caps.indexOf("D") !== -1,
         uids: [],
         hasSecret: false,
-        canDecrypt: false
+        canDecrypt: false,
+        canCertify: false
       }
       keys.push(current)
       expectPrimaryFpr = true
@@ -163,13 +174,31 @@ function parseKeys(publicColons, secretColons) {
       var matchingSecret = secret[current.fingerprint]
       current.hasSecret = !!matchingSecret
       current.canDecrypt = !!matchingSecret && matchingSecret.canDecrypt
+      current.canCertify = !!matchingSecret && matchingSecret.canCertify
+      if (current.canCertify && isFingerprint(current.fingerprint)) certifiers[current.fingerprint] = current
       expectPrimaryFpr = false
-    } else if (type === "sub") {
+    } else if (type === "sub" || type === "uat") {
+      currentUid = null
       expectPrimaryFpr = false
     } else if (type === "uid" && current) {
+      currentUid = null
       var validity = fields[1] || "-"
       if (validity === "r") continue
-      current.uids.push({ text: unescapeColon(fields[9]), validity: validity })
+      currentUid = { text: unescapeColon(fields[9]), validity: validity, certifications: {} }
+      current.uids.push(currentUid)
+    } else if (currentUid && (type === "sig" || type === "rev") && fields[1] === "!") {
+      var issuer = fields[12]
+      if (!isFingerprint(issuer) || !secret[issuer] || issuer === current.fingerprint) continue
+      var sigClass = fields[10] || ""
+      var created = Number(fields[5])
+      if (!(created > 0 && created <= now)) continue
+      var cert = currentUid.certifications[issuer] || { signed: 0, revoked: 0 }
+      if (type === "rev" && /^30[lx](,|$)/.test(sigClass)) {
+        cert.revoked = Math.max(cert.revoked, created)
+      } else if (type === "sig" && /^1[0-3]l$/.test(sigClass) && (!fields[6] || Number(fields[6]) > now)) {
+        cert.signed = Math.max(cert.signed, created)
+      }
+      currentUid.certifications[issuer] = cert
     }
   }
 
@@ -189,7 +218,22 @@ function parseKeys(publicColons, secretColons) {
     key.revoked = key.validity === "r"
     key.expired = key.validity === "e"
     key.usable = !key.revoked && !key.expired && !key.disabled
-    key.verified = key.usable && (key.uidValidity === "f" || key.uidValidity === "u")
+    for (var u = 0; u < key.uids.length; u++) {
+      var uid = key.uids[u]
+      // A good local certification from a personal key is evidence about this
+      // identity even if the certifier is not an ultimate trust anchor.
+      uid.locallyVerified = key.usable && ["e", "i", "d"].indexOf(uid.validity) === -1 &&
+        Object.keys(uid.certifications).some(function(fpr) {
+          var cert = uid.certifications[fpr]
+          var certifier = certifiers[fpr]
+          return cert.signed > cert.revoked && certifier && !certifier.disabled &&
+            ["r", "e", "i", "d"].indexOf(certifier.validity) === -1
+        })
+      delete uid.certifications
+    }
+    var trustedByGpg = isTrustedValidity(key.uidValidity)
+    key.locallyVerified = !trustedByGpg && key.uids.length > 0 && key.uids[0].locallyVerified
+    key.verified = key.usable && (trustedByGpg || key.locallyVerified)
     result.push(key)
   }
   result.sort(function(a, b) {
@@ -197,6 +241,14 @@ function parseKeys(publicColons, secretColons) {
     return a.label.toLowerCase() < b.label.toLowerCase() ? -1 : (a.label.toLowerCase() > b.label.toLowerCase() ? 1 : 0)
   })
   return result
+}
+
+function isTrustedValidity(validity) {
+  return validity === "f" || validity === "u"
+}
+
+function keyVerificationLabel(key) {
+  return key.locallyVerified ? "verified locally" : validityLabel(key.uidValidity)
 }
 
 function validityLabel(validity) {
@@ -218,6 +270,13 @@ function formatFingerprint(fpr) {
   for (var i = 0; i < fpr.length; i += 4) groups.push(fpr.slice(i, i + 4))
   if (groups.length === 10) return groups.slice(0, 5).join(" ") + "  " + groups.slice(5).join(" ")
   return groups.join(" ")
+}
+
+function compareFingerprint(input, fingerprint) {
+  var compact = String(input || "").replace(/\s/g, "")
+  if (!compact) return "empty"
+  if (compact.length !== fingerprint.length || !/^[0-9a-fA-F]+$/.test(compact)) return "incomplete"
+  return compact.toUpperCase() === fingerprint ? "match" : "mismatch"
 }
 
 function shortFingerprint(fpr) {
@@ -276,6 +335,10 @@ function signingKeys(keys) {
   return keys.filter(function(k) { return k.usable && k.canSign && k.hasSecret })
 }
 
+function certificationKeys(keys) {
+  return keys.filter(function(k) { return k.usable && k.canCertify })
+}
+
 // --- input classification ---------------------------------------------------
 
 function messageKind(text) {
@@ -318,6 +381,24 @@ function workerFailure(result) {
   case "": case undefined: return ""
   default: return "The isolated worker could not complete the operation."
   }
+}
+
+function verificationFailure(result) {
+  var workerError = workerFailure(result)
+  if (workerError) return workerError
+  var status = result.status || []
+  for (var i = 0; i < status.length; i++) {
+    if (status[i].keyword !== "ERROR" && status[i].keyword !== "FAILURE") continue
+    // libgpg-error packs the source above the low 16 bits of the error code.
+    switch (Number(status[i].args[1]) & 0xffff) {
+    case 11: return "GnuPG could not unlock your private key with that passphrase. Try again."
+    case 16: case 27: case 37: return "GnuPG could not find that exact identity on the contact’s key. Refresh Keys and try again."
+    case 17: case 54: case 125: return "GnuPG could not use your private primary key to certify this contact. Check that it is available and that your security key is connected if you use one."
+    case 85: case 86: return "GnuPG could not open its passphrase prompt. Check your pinentry configuration and try again."
+    case 99: case 198: return "The GnuPG passphrase prompt was cancelled. Try again to verify this contact."
+    }
+  }
+  return "GnuPG could not certify this contact’s identity. Refresh Keys and try again."
 }
 
 function writeSucceeded(result, signed, encrypted) {
@@ -481,7 +562,7 @@ function signatureIdentity(sig, keys) {
 function isVerifiedUid(key, uid) {
   if (!key || !key.usable || !uid) return false
   for (var i = 0; i < key.uids.length; i++) {
-    if (key.uids[i].text === uid && (key.uids[i].validity === "f" || key.uids[i].validity === "u")) return true
+    if (key.uids[i].text === uid && (isTrustedValidity(key.uids[i].validity) || key.uids[i].locallyVerified)) return true
   }
   return false
 }
@@ -559,17 +640,21 @@ if (typeof module !== "undefined") {
     displayIdentity: displayIdentity,
     parseKeys: parseKeys,
     validityLabel: validityLabel,
+    keyVerificationLabel: keyVerificationLabel,
     formatFingerprint: formatFingerprint,
+    compareFingerprint: compareFingerprint,
     shortFingerprint: shortFingerprint,
     keyLabel: keyLabel,
     findKey: findKey,
     encryptionKeys: encryptionKeys,
     personalEncryptionKeys: personalEncryptionKeys,
     signingKeys: signingKeys,
+    certificationKeys: certificationKeys,
     messageKind: messageKind,
     inputTooLarge: inputTooLarge,
     utf8Length: utf8Length,
     workerFailure: workerFailure,
+    verificationFailure: verificationFailure,
     writeSucceeded: writeSucceeded,
     parseStatusLine: parseStatusLine,
     parseStatus: parseStatus,

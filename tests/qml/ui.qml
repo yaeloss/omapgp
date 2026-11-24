@@ -69,8 +69,8 @@ ShellRoot {
     check(input !== null && output !== null, "actual editors and output views instantiate")
     if (!input || !output) { Qt.exit(1); return }
     var label = find(output, "plainTextOutput")
-    check(label && typeof label.copy === "undefined" && typeof label.selectAll === "undefined", "sensitive output has no selection/copy API")
-    check(label.textFormat === Text.PlainText, "output remains plain text")
+    check(label && label.readOnly && !label.enabled && !label.selectByMouse, "sensitive output cannot be selected into the primary clipboard")
+    check(label.textFormat === TextEdit.PlainText, "output remains plain text")
     output.text = "fixture"
     output.clear()
     check(output.text === "", "output view releases its text")
@@ -83,7 +83,7 @@ ShellRoot {
     input._applyPaste({exitCode:0, stdout:"stale", errorCode:""}, revision, 0, 8)
     check(input.text === "new draft", "stale clipboard result cannot replace edited text")
     input._applyPaste({exitCode:0, stdout:"accepted", errorCode:""}, input._revision, 0, 9)
-    check(input.text === "accepted", "bounded paste accepts normal text")
+    check(input.text === "accepted" && input.textArea.cursorPosition === 8, "bounded paste inserts text and places the cursor after it")
     input.clear()
     check(input.text === "" && !input.textArea.canUndo, "clear drops editor text and undo history")
 
@@ -97,13 +97,38 @@ ShellRoot {
     p.encryptToSelf = !p.encryptToSelf
     check(p.writeOutput === "", "self-recipient change clears generated output")
     p.setMode("write")
+    p.keysLoaded = true
+    var recipient = { fingerprint: "E".repeat(40), name: "Contact", usable: true, canEncrypt: true, verified: false }
+    p.keys = [recipient]
+    var recipientPicker = find(p, "pgpRecipientPicker")
+    recipientPicker.toggleValue(recipient.fingerprint)
+    check(recipientPicker.isSelected(recipient.fingerprint) && p.recipients.indexOf(recipient.fingerprint) !== -1,
+          "choosing a recipient updates encryption's selection")
+    p.wipe()
+    p.setMode("write")
+    input.text = "fixture"
+    check(!recipientPicker.isSelected(recipient.fingerprint) && p.recipients.length === 0,
+          "closing the panel clears both the selected recipient and its visible checkbox")
+    recipientPicker.toggleValue(recipient.fingerprint)
+    p.encrypt()
+    check(recipientPicker.isSelected(recipient.fingerprint) && p.writeError.indexOf("Confirm the unverified recipients") === 0,
+          "reselecting a contact reaches the fingerprint warning instead of the empty recipient error")
+    p.wipe()
+    p.setMode("write")
     p.encryptToSelf = true
     p.keysLoaded = true
     var ownOne = { fingerprint: "A".repeat(40), name: "First", usable: true, canEncrypt: true, canDecrypt: true }
     var ownTwo = { fingerprint: "B".repeat(40), name: "Second", usable: true, canEncrypt: true, canDecrypt: true }
     var picker = find(p, "pgpSelfKeyPicker")
-    p.keys = [ownOne]
+    p.keys = [ownOne, recipient]
     check(p.selfKey === ownOne, "a single personal encryption key is selected automatically")
+    recipientPicker.toggleValue(ownOne.fingerprint)
+    check(recipientPicker.options[0].description.includes("your key") && p.unverifiedRecipients.length === 0,
+          "a personal decryption key is labeled as yours and skips the contact warning")
+    recipientPicker.toggleValue(recipient.fingerprint)
+    check(p.unverifiedRecipients.length === 1 && p.unverifiedRecipients[0] === recipient,
+          "a contact still needs verification when selected alongside your own key")
+    p.recipients = []
     p.keys = [ownOne, ownTwo]
     check(p.selfKey === null && picker.options.length === 3, "multiple personal encryption keys require a choice")
     p.writeOutput = "old ciphertext"
@@ -167,14 +192,75 @@ ShellRoot {
     input.textArea.select(0, 7)
     input.copySelection(true)
     p.wipe()
+    check(clipboard.clipboard.pendingCopy !== null, "closing lets an explicit sensitive clipboard write finish")
     clipboard.calls[5].complete(true)
     check(input.text === "" && p.copyNotice === "" && clipboard.clipboard.pendingCopy === null,
           "closing drops the edit callback and clipboard notice")
+
+    clipboard.calls.length = 0
+    p.setMode("write")
+    var encrypted = "-----BEGIN PGP MESSAGE-----\n\nfixture\n-----END PGP MESSAGE-----\n"
+    input.text = "draft"
+    p.writeOutput = encrypted
+    check(find(p, "pgpCopyWriteResult").text === "Copy PGP message", "the encrypted result has a distinct copy button")
+    var writeView = find(p, "pgpWriteOutput")
+    var writeResult = find(writeView, "plainTextOutput")
+    writeView.text = encrypted
+    writeResult.selectAll()
+    check(writeResult.enabled && writeResult.selectByMouse && writeResult.selectedText.length === encrypted.length,
+          "the encrypted result can be selected for native Copy")
+    p.writeOutputSensitive = true
+    check(!writeResult.enabled && !writeResult.selectByMouse, "signed-only text cannot be selected into the primary clipboard")
+    p.writeOutputSensitive = false
+    input.copyShortcut(false)
+    check(clipboard.calls.length === 1 && clipboard.calls[0].text === encrypted && !clipboard.calls[0].sensitive,
+          "Ctrl+C without a selection copies the entire armored message")
+    clipboard.calls[0].complete(true)
+    find(p, "pgpCopyWriteResult").clicked()
+    p.wipe()
+    check(clipboard.calls.length === 2 && clipboard.clipboard.pendingCopy !== null,
+          "an encrypted copy stays queued when the user immediately closes the panel")
+    clipboard.calls.pop().complete(true)
+    p.setMode("write")
+    input.text = "draft"
+    p.writeOutput = encrypted
+    input.textArea.select(0, 5)
+    input.copyShortcut(false)
+    check(clipboard.calls.length === 2 && clipboard.calls[1].text === "draft" && clipboard.calls[1].sensitive,
+          "Ctrl+C still gives the editor selection priority")
+    clipboard.calls[1].complete(true)
+    p.setMode("read")
+    var readInput = find(p, "pgpReadInput")
+    p.readPlaintext = "decrypted fixture"
+    readInput.copyShortcut(false)
+    readInput.copyShortcut(true)
+    check(clipboard.calls.length === 3 && clipboard.calls[2].text === p.readPlaintext && clipboard.calls[2].sensitive,
+          "a single copy of decrypted text remains sensitive and ignores key repeats")
+    clipboard.calls[2].complete(true)
+
+    p.setMode("keys")
+    var contact = { fingerprint: "C".repeat(40), displayUid: "Contact <contact@example.invalid>", uid: "Contact <contact@example.invalid>" }
+    var fingerprintInput = find(p, "pgpFingerprintInput")
+    var confirm = find(p, "pgpConfirmFingerprint")
+    p.keys = [contact]
+    p.startVerification(contact)
+    check(find(p, "pgpVerificationFingerprint").text.replace(/\s/g, "") === contact.fingerprint && !confirm.enabled,
+          "the comparison shows the entire fingerprint and needs a personal certification key to save")
+    p.keys = [contact, { fingerprint: "D".repeat(40), usable: true, canCertify: true }]
+    fingerprintInput.text = "D".repeat(40)
+    check(p.fingerprintCheck === "mismatch" && !confirm.enabled, "a pasted mismatch blocks verification")
+    fingerprintInput.text = Model.formatFingerprint(contact.fingerprint).toLowerCase()
+    check(p.fingerprintCheck === "match" && confirm.enabled, "a matching fingerprint can be confirmed")
+    p.verifyTarget = null
+    check(fingerprintInput.text === "", "closing the comparison clears the pasted fingerprint")
 
     clipboard.clipboard.override = null
     input.text = "clipboard fixture"
     input.textArea.select(0, 9)
     input.copySelection(true)
+    var writer = find(p, "pgpClipboardWriter")
+    check(writer.command.indexOf("text/plain;charset=utf-8") !== -1 && writer.command.indexOf("--sensitive") !== -1,
+          "the actual clipboard command offers UTF-8 text with the sensitive hint")
     waitForClipboardFailure.start()
   }
 }

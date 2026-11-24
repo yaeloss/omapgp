@@ -31,19 +31,18 @@ cryptography of its own.
 - gpg runs with `--disable-dirmngr`, `--no-auto-key-retrieve`, and
   `--no-auto-key-import`, so it never contacts a keyserver and never imports
   keys you didn't paste in yourself. omaPGP itself makes no network requests.
-- Closing cancels requests, destroys their output collectors, and clears the
-  editors, undo history, and result references. This is best-effort cleanup,
+- Closing cancels GnuPG and paste requests and clears the editors, undo history,
+  and results. An explicit copy can finish after closing so you can paste in
+  another app. This is best-effort cleanup,
   not guaranteed physical memory erasure.
 - Messages are shown as plain text only; nothing is rendered as HTML and no
   remote content loads.
 - Passphrases are handled by GnuPG's own agent and pinentry window. omaPGP never
   sees or stores them.
-- Copying decrypted or signed-only text through its Copy button takes two clicks,
-  is marked sensitive for clipboard managers, and is cleared after 45 seconds (configurable)
-  if it is still there. Output views deliberately have no text-selection or
-  built-in Copy action. Copy and Cut in the editable boxes — which hold your
-  draft and any pasted private key — are routed through the same guarded
-  clipboard path. Cut removes the original selection only after the clipboard
+- Copying decrypted or signed-only text takes one click. The copy is marked
+  sensitive for clipboard managers and cleared after 45 seconds (configurable)
+  if it is still there. Copy and Cut in the editors use the same path for drafts
+  and pasted keys. Cut removes the original selection only after the clipboard
   write succeeds. The panel keeps no copy history. Clipboard managers may
   ignore the sensitive hint.
 - The plugin reports failed clipboard writes instead of claiming success, and it
@@ -114,6 +113,8 @@ o.bind("SUPER + ALT + P", "omaPGP", "omarchy-shell shell toggle io.github.yaelos
 | --- | --- |
 | Ctrl+1 / Ctrl+2 / Ctrl+3 | Read / Write / Keys |
 | Ctrl+Enter | Decrypt, encrypt, or import (depending on the tab) |
+| Ctrl+A / Ctrl+C | Select or copy a draft or encrypted result. Ctrl+C copies the full Read or Write result when no text is selected |
+| Ctrl+V | Paste at the cursor or replace the selected text |
 | Escape | Close and clear the panel |
 
 ### Getting your keys in
@@ -130,15 +131,28 @@ On **Write**, **Encrypt to myself too** adds your personal encryption key to the
 recipients. If there is one eligible key, the panel shows it below the toggle.
 If there are several, choose the one you want to use. Encryption-only keys are
 eligible when the keyring has the private encryption key or a reference to it
-on a hardware token.
+on a hardware token. omaPGP identifies keys it can decrypt with as **your key**
+in the recipient picker. You can encrypt to those keys without contact verification.
+The same message still requires verification or confirmation for unverified contacts.
 
 ### Verifying people
 
-A key you've imported could belong to anyone. Before trusting it, compare its
-fingerprint with the owner through a channel you trust, such as in person or by
-phone, then press **Verify**. This certifies only the displayed identity, with
-a local signature omitted by this plugin's public-key export. Other GnuPG
-tools can explicitly export local signatures.
+Keys with private key material in your keyring appear as **your key**. You can
+find your full fingerprint on that row and share it through a trusted channel
+so other people can verify your public key. If your key appears as **public key**
+only, import your own private key into the keyring omaPGP uses.
+
+1. In **Keys**, select **Verify** next to your contact's public key.
+2. Ask your contact for their full fingerprint in person, by phone, or through
+   a channel you already trust. Compare it with the one shown, or paste it into
+   the comparison field.
+3. If every group matches, select **Confirm match and verify**. Saving the
+   verification requires your own GnuPG key pair with certification capability.
+
+The local signature certifies the displayed identity. If GnuPG has not assigned
+full validity to the identity, omaPGP labels a checked local certification
+from your key **verified locally**. omaPGP omits local signatures from its
+public-key export.
 
 Verification belongs to a particular identity on a particular key. A newly
 added identity is not automatically verified because another identity on that

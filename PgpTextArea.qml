@@ -31,6 +31,7 @@ BorderSurface {
   signal submitRequested()
   signal inputRejected(string message)
   signal copyRequested(string text, bool cut, var completed)
+  signal copyWithoutSelectionRequested()
 
   function clear() { pasteReader.cancel(); _revision++; _lastText = ""; area.text = "" }
   function _rejectEdit(message) {
@@ -44,6 +45,11 @@ BorderSurface {
     return area.selectionStart === area.selectionEnd ? ""
       : area.getText(area.selectionStart, area.selectionEnd)
   }
+  function copyShortcut(repeating) {
+    if (repeating) return
+    if (area.selectionStart !== area.selectionEnd) copySelection(false)
+    else copyWithoutSelectionRequested()
+  }
   // Every Copy/Cut path in this editor ends here; it never invokes the
   // control's built-in clipboard action.
   function copySelection(cut) {
@@ -51,7 +57,6 @@ BorderSurface {
     if (selection === "") return
     if (!cut) {
       root.copyRequested(selection, false, null)
-      area.deselect()
       return
     }
     var revision = root._revision
@@ -63,12 +68,12 @@ BorderSurface {
       return true
     })
   }
-  function pasteClipboard(primary, replaceAll) {
+  function pasteClipboard(primary) {
     if (readOnly || pasteReader.running) return
     area.forceActiveFocus()
     var revision = _revision
-    var start = replaceAll === false ? area.selectionStart : 0
-    var end = replaceAll === false ? area.selectionEnd : area.text.length
+    var start = area.selectionStart
+    var end = area.selectionEnd
     var args = primary ? ["wl-paste", "--primary", "--no-newline"] : ["wl-paste", "--no-newline"]
     pasteReader.start(args, null, function(r) {
       root._applyPaste(r, revision, start, end)
@@ -83,6 +88,7 @@ BorderSurface {
     if (Model.inputTooLarge(next)) { root.inputRejected("Input is too large (maximum 64 KiB of UTF-8 text)."); return }
     area.remove(start, end)
     area.insert(start, result.stdout)
+    area.cursorPosition = start + result.stdout.length
   }
 
   GpgProcess { id: pasteReader }
@@ -141,7 +147,7 @@ BorderSurface {
           enabled: !area.readOnly && area.selectedText !== ""
           onTriggered: root.copySelection(true)
         }
-        Controls.MenuItem { text: "Paste"; enabled: !area.readOnly; onTriggered: root.pasteClipboard(false, false) }
+        Controls.MenuItem { text: "Paste"; enabled: !area.readOnly; onTriggered: root.pasteClipboard(false) }
         Controls.MenuItem { text: "Select all"; onTriggered: area.selectAll() }
       }
 
@@ -150,20 +156,22 @@ BorderSurface {
         acceptedButtons: Qt.MiddleButton
         onPressed: function(mouse) {
           mouse.accepted = true
-          root.pasteClipboard(true, false)
+          if (root.readOnly) return
+          area.cursorPosition = area.positionAt(mouse.x, mouse.y)
+          root.pasteClipboard(true)
         }
       }
 
       // Tab moves focus instead of inserting a tab; Ctrl+Enter submits.
       Keys.onPressed: function(event) {
         if (event.matches(StandardKey.Copy)) {
-          root.copySelection(false)
+          root.copyShortcut(event.isAutoRepeat)
           event.accepted = true
         } else if (event.matches(StandardKey.Cut)) {
           if (!area.readOnly) root.copySelection(true)
           event.accepted = true
         } else if (event.matches(StandardKey.Paste)) {
-          root.pasteClipboard(false, false)
+          root.pasteClipboard(false)
           event.accepted = true
         } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
           var next = area.nextItemInFocusChain(event.key === Qt.Key_Tab && !(event.modifiers & Qt.ShiftModifier))

@@ -38,6 +38,11 @@ assert.equal(revoked.usable, false)
 assert.equal(revoked.name, "(no name)")
 assert.deepEqual(model.encryptionKeys(keys).map(k => k.fingerprint), [ALICE, BOB])
 assert.deepEqual(model.signingKeys(keys).map(k => k.fingerprint), [ALICE])
+assert.deepEqual(model.certificationKeys(keys).map(k => k.fingerprint), [ALICE])
+const certificationOnly = model.parseKeys(pub.replace("scESC", "cC"), sec.replace("scESC", "cC"))
+assert.deepEqual(model.signingKeys(certificationOnly), [])
+assert.deepEqual(model.certificationKeys(certificationOnly).map(k => k.fingerprint), [ALICE])
+assert.deepEqual(model.certificationKeys(model.parseKeys(pub, sec.replace("scESC:::+", "scESC:::#"))), [])
 assert.deepEqual(model.personalEncryptionKeys(keys).map(k => k.fingerprint), [ALICE])
 assert.deepEqual(model.personalEncryptionKeys(model.parseKeys(pub, sec.replace("e:::+", "e:::#"))), [])
 assert.deepEqual(model.personalEncryptionKeys(model.parseKeys(pub, sec.replace("ssb:u", "ssb:e"))), [])
@@ -46,6 +51,11 @@ assert.equal(model.findKey(keys, "49B2F813C526592F"), bob)
 assert.equal(model.findKey(keys, ""), null)
 assert.equal(model.findKey([{fingerprint:"F".repeat(24) + ALICE}, ...keys], ALICE), keys[0])
 assert.equal(model.formatFingerprint(ALICE), "7EE2 D9F0 6700 2395 724E  24F1 AB53 68D1 CED2 B790")
+assert.equal(model.compareFingerprint(model.formatFingerprint(ALICE).toLowerCase(), ALICE), "match")
+assert.equal(model.compareFingerprint(BOB, ALICE), "mismatch")
+assert.equal(model.compareFingerprint(ALICE.slice(-16), ALICE), "incomplete")
+assert.equal(model.compareFingerprint("\n  ", ALICE), "empty")
+assert.equal(model.compareFingerprint("ﬀ" + "F".repeat(38), "F".repeat(40)), "incomplete")
 
 // argv safety: only fingerprints reach gpg, message text never does.
 assert.equal(model.isFingerprint(ALICE), true)
@@ -75,6 +85,11 @@ assert.equal(model.inputTooLarge("a".repeat(model.MAX_INPUT_CHARS + 1)), true)
 
 const st = l => model.parseStatus(l.map(s => "[GNUPG:] " + s).concat(["gpg: human text"]))
 assert.equal(model.parseStatusLine("gpg: nope"), null)
+assert.match(model.verificationFailure({status:st(["ERROR keysig 67108881", "FAILURE gpg-exit 33554433"])}), /private primary key/)
+assert.match(model.verificationFailure({status:st(["ERROR keysig 67108949"])}), /could not open its passphrase prompt/)
+assert.match(model.verificationFailure({status:st(["ERROR keysig 83886179"])}), /was cancelled/)
+assert.match(model.verificationFailure({status:st(["ERROR keyedit.sign-key 33554448"])}), /exact identity/)
+assert.match(model.verificationFailure({errorCode:"timeout", status:[]}), /timed out/)
 
 // Encrypted + signed by a key we don't have.
 let s = model.decryptSummary(st(["ENC_TO 072E6D017DF6C285 18 0", "BEGIN_DECRYPTION", "DECRYPTION_INFO 2 9 0", "PLAINTEXT 62 0 ", "NEWSIG",
@@ -150,6 +165,7 @@ assert.equal(model.signatureTone({...mixedSig, uid:"Known%3A"}, escapedKeys), "g
 assert.equal(model.signatureTone({...mixedSig, uid:"bad%escape"}, escapedKeys), "warn")
 assert.equal(model.decryptSummary(st(["NEWSIG", "GOODSIG AB5368D1CED2B790 Alice", "TRUST_FULLY 0 pgp"]), 0).signatures[0].state, "error")
 assert.equal(model.lsignArgs("", ALICE, BOB), null)
+assert.equal(model.lsignArgs("", ALICE, BOB, "Alice\x00Other"), null)
 assert.deepEqual(model.lsignArgs("", ALICE, BOB, "Alice").slice(-3), ["--", ALICE, "=Alice"])
 
 // F3: ignore gpg.conf, neutralize extra recipients/groups, and force stdout.

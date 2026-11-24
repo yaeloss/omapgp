@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.yaeloss.omapgp",
   "name": "omaPGP",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "author": "Yaël",
   "license": "MIT",
   "description": "Read, write, encrypt, decrypt, sign, and verify PGP text from the Omarchy bar using your local GnuPG keyring and bounded, pipe-only processing.",

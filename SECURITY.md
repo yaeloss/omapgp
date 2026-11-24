@@ -18,10 +18,12 @@ The version in `manifest.json` is not evidence that a release has been published
 - A valid signature is not the same as a verified identity. Identity badges
   use certification of the exact displayed UID and matching key fingerprint.
   Compare the full fingerprint through a trusted channel before verification.
-- Closing cancels pending operations, destroys collectors, and clears message
-  references and editor undo history. Superseded callbacks cannot restore text.
-- Sensitive output has no default selection/copy path. Its explicit Copy button
-  asks twice, sets a sensitive clipboard hint, and schedules conditional expiry.
+- Closing cancels GnuPG and paste, clears message references and undo history,
+  and lets an explicit clipboard write finish. Superseded callbacks cannot
+  restore editor text.
+- Explicit copies of decrypted or signed-only text set a sensitive clipboard
+  hint and schedule conditional expiry. Mouse selection is disabled for these
+  results because it can publish text to the primary clipboard.
   Copy and Cut inside the draft and import editors use the same guarded path, so
   a draft or a pasted private key does not travel through Qt's built-in clipboard
   action.
@@ -79,8 +81,8 @@ and messages. Public issue templates are not a private channel.
 - Verify the panel title/tooltip, tab navigation, and Escape/outside-click close.
 - With a disposable protected key, test the real pinentry window's focus,
   success, cancellation, and panel recovery. Do not use a production key.
-- Check explicit Copy confirmation, the sensitive hint, expiry, and preservation
-  of clipboard content that the user replaces before the timer fires.
+- Check one-click copy of complete results, selection in encrypted output, the
+  sensitive hint, expiry, and preservation of replacement clipboard content.
 - Check that Ctrl+C/Ctrl+X and the right-click menu in the draft and import
   editors use the guarded copy and show the clipboard notice.
 - Check the hardware-token path if support is being claimed for that device.

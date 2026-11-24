@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.1.4
+
+omaPGP 0.1.4 improves copying and pasting PGP messages, makes contact
+verification easier to follow, and fixes recipient selection in Write.
+
+### What changed
+
+- **Copy and paste.** Copy the whole result in one click, then paste it in
+  another app. Encrypted messages are offered as plain text, and a copy can
+  finish after you close the panel. Select part of an encrypted result to copy
+  just that selection. Paste at the cursor or over selected text in any editor.
+  omaPGP also accepts armored PGP text restored from history with a PGP media
+  type.
+- **Contact verification.** Compare or paste a contact’s full fingerprint in
+  the Keys tab before confirming. omaPGP checks the exact identity again after
+  saving and recognizes valid local certifications even when the personal key
+  that signed them has no GnuPG ownertrust assigned. Verification failures show
+  a more specific message.
+- **Recipients and personal keys.** The displayed recipient selection stays
+  in sync with encryption after a keyring refresh or when reopening the panel.
+  Personal keys are labeled **your key**, with their full fingerprint ready to
+  share. You can encrypt to your own decryption keys without the contact
+  verification prompt.
+
+### Update on Omarchy
+
+```sh
+omarchy plugin update io.github.yaeloss.omapgp
+```
+
+If your clipboard history picker restores encrypted text as a PGP file, copy
+it directly from omaPGP before pasting into another app. omaPGP can read those
+history entries in its own editors.
+
 ## 0.1.3
 
 The first tagged release of omaPGP brings safer clipboard handling and a choice

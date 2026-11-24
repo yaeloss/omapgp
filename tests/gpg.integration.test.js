@@ -37,7 +37,7 @@ function genKey(dir, uid) {
 }
 
 function keys(dir) {
-  return model.parseKeys(run(model.listKeysArgs(dir, false)).stdout, run(model.listKeysArgs(dir, true)).stdout)
+  return model.parseKeys(run(model.listKeysArgs(dir, false, true)).stdout, run(model.listKeysArgs(dir, true)).stdout)
 }
 
 const alice = home()
@@ -65,6 +65,16 @@ try {
   encryptOnly = run(model.encryptArgs(personal, {recipients:[encryptionOnlyKey.fingerprint]}), "Personal copy\n")
   assert.equal(encryptOnly.exitCode, 0)
   assert.equal(run(model.decryptArgs(personal), encryptOnly.stdout).stdout, "Personal copy\n")
+  assert.equal(run(model.gpgArgs(personal, ["--import-ownertrust"]), encryptionOnlyKey.fingerprint + ":3:\n").exitCode, 0)
+  const untrustedPersonal = model.findKey(keys(personal), encryptionOnlyKey.fingerprint)
+  assert.equal(untrustedPersonal.canDecrypt, true)
+  assert.equal(untrustedPersonal.verified, false)
+  const toUntrustedPersonal = {recipients:[untrustedPersonal.fingerprint]}
+  assert.notEqual(workerRun(model.encryptArgs(personal, toUntrustedPersonal), "Personal copy\n").exitCode, 0)
+  const personalCiphertext = workerRun(model.encryptArgs(personal, {...toUntrustedPersonal, allowUnverified:true}), "Personal copy\n")
+  assert.equal(personalCiphertext.exitCode, 0)
+  assert.equal(workerRun(model.decryptArgs(personal), personalCiphertext.stdout).stdout, "Personal copy\n")
+  assert.equal(model.findKey(keys(personal), untrustedPersonal.fingerprint).verified, false, "the request leaves GnuPG trust alone")
 
   // Exchange public keys through the same import path the panel uses.
   const bobPub = run(model.exportArgs(bob, bobKey.fingerprint))
@@ -74,6 +84,24 @@ try {
   assert.deepEqual(imp.fingerprints, [bobKey.fingerprint])
   imp = model.importSummary(run(model.importArgs(bob), run(model.exportArgs(alice, aliceKey.fingerprint)).stdout).status)
   assert.equal(imp.ok, true)
+
+  // Personal key material can be present without ultimate ownertrust. A
+  // successful local certification still proves verification of the exact UID.
+  const ownertrust = personalKey.fingerprint + ":3:\n"
+  assert.equal(run(model.gpgArgs(personal, ["--import-ownertrust"]), ownertrust).exitCode, 0)
+  assert.equal(workerRun(model.importArgs(personal), bobPub.stdout).exitCode, 0)
+  const localSign = model.lsignArgs(personal, bobKey.fingerprint, personalKey.fingerprint, bobKey.uid)
+  assert.equal(workerRun(localSign).exitCode, 0)
+  const certified = model.findKey(keys(personal), bobKey.fingerprint)
+  assert.notEqual(certified.uidValidity, "f")
+  assert.equal(certified.verified, true)
+  assert.equal(certified.locallyVerified, true)
+  assert.equal(model.keyVerificationLabel(certified), "verified locally")
+  assert.equal(model.isVerifiedUid(certified, bobKey.uid), true)
+  assert.equal(model.isVerifiedUid(certified, "An unrelated identity"), false)
+  const revoke = model.gpgArgs(personal, ["--quick-revoke-sig", "--", bobKey.fingerprint, personalKey.fingerprint, "=" + bobKey.uid])
+  assert.equal(workerRun(revoke).exitCode, 0)
+  assert.equal(model.findKey(keys(personal), bobKey.fingerprint).verified, false)
 
   const bobInAlice = model.findKey(keys(alice), bobKey.fingerprint)
   assert.equal(bobInAlice.verified, false)
@@ -106,8 +134,10 @@ try {
   assert.equal(r.stdout, secretText)
 
   // Bob verifies Alice's key locally, after which the signature is trusted.
-  r = run(model.lsignArgs(bob, aliceKey.fingerprint, bobKey.fingerprint, aliceKey.uid))
-  assert.equal(r.exitCode, 0)
+  r = workerRun(model.lsignArgs(bob, aliceKey.fingerprint, bobKey.fingerprint, aliceKey.uid))
+  assert.equal(r.exitCode, 0, JSON.stringify(r.statusLines))
+  assert.equal(r.errorCode, "")
+  assert.ok(model.hasStatus(r.status, "KEY_CONSIDERED"))
   assert.equal(model.findKey(keys(bob), aliceKey.fingerprint).verified, true)
   r = run(model.decryptArgs(bob), armored)
   s = model.decryptSummary(r.status, r.exitCode)
@@ -147,7 +177,7 @@ try {
   assert.equal(oversized.stdout, "")
 
   // F2: importing a new primary UID does not inherit a different UID's certificate.
-  const exactUid = "Uncertified  Person <uncertified@example.invalid>"
+  const exactUid = "Uncertified\nPerson  Test <uncertified@example.invalid>"
   for (const uid of [exactUid, "Other Person <other@example.invalid>"]) {
     r = run(model.gpgArgs(alice, ["--pinentry-mode", "loopback", "--passphrase", "", "--quick-add-uid", aliceKey.fingerprint, uid]))
     assert.equal(r.exitCode, 0)
@@ -167,8 +197,9 @@ try {
   assert.equal(s.signatures[0].state, "good")
   assert.equal(model.signatureTone(s.signatures[0], keys(bob)), "warn")
   assert.match(model.signatureText(s.signatures[0], keys(bob)), /identity not verified/)
-  r = run(model.lsignArgs(bob, aliceKey.fingerprint, bobKey.fingerprint, changed.uid))
-  assert.equal(r.exitCode, 0)
+  r = workerRun(model.lsignArgs(bob, aliceKey.fingerprint, bobKey.fingerprint, changed.uid))
+  assert.equal(r.exitCode, 0, JSON.stringify(r.statusLines))
+  assert.equal(r.errorCode, "")
   changed = model.findKey(keys(bob), aliceKey.fingerprint)
   assert.equal(changed.verified, true)
   assert.equal(model.isVerifiedUid(changed, exactUid), true)

@@ -33,11 +33,11 @@ Panel {
   property bool readHasResult: false
   property string readNotice: ""
   property string copyNotice: ""
-  property bool copyArmed: false
 
   // Write
-  property var recipients: []
-  property string signer: ""
+  // The controls own these values and update them before emitting changed.
+  property alias recipients: recipientPicker.values
+  property alias signer: signingPicker.value
   property bool encryptToSelf: true
   property string selfKeyFingerprint: ""
   property bool allowUnverified: false
@@ -45,7 +45,6 @@ Panel {
   property string writeError: ""
   property string writeOutputKind: ""
   property bool writeOutputSensitive: false
-  property bool writeCopyArmed: false
   property int _readRevision: 0
   property int _writeRevision: 0
   property int _operationEpoch: 0
@@ -58,6 +57,7 @@ Panel {
   property bool importOk: false
   property string keysNotice: ""
   property var verifyTarget: null
+  readonly property string fingerprintCheck: verifyTarget ? Model.compareFingerprint(verifyInput.text, verifyTarget.fingerprint) : "empty"
 
   readonly property string homedir: Model.expandHome(root.setting("gnupgHome", ""), Quickshell.env("HOME") || "")
   // A relative folder would land inside the shell's working directory.
@@ -76,6 +76,7 @@ Panel {
   onSelfKeyFingerprintChanged: invalidateWrite()
   onAllowUnverifiedChanged: invalidateWrite()
   onKeysChanged: invalidateWrite()
+  onVerifyTargetChanged: if (verifyInput) verifyInput.clear()
   onHomedirChanged: {
     if (!_ready) return
     wipe()
@@ -87,6 +88,7 @@ Panel {
 
   readonly property var encryptKeys: Model.encryptionKeys(root.keys)
   readonly property var signKeys: Model.signingKeys(root.keys)
+  readonly property var certKeys: Model.certificationKeys(root.keys)
   readonly property var selfKeys: Model.personalEncryptionKeys(root.keys)
   readonly property var selfKey: {
     if (root.selfKeyFingerprint) return Model.findKey(root.selfKeys, root.selfKeyFingerprint)
@@ -96,7 +98,7 @@ Panel {
     var out = []
     for (var i = 0; i < root.recipients.length; i++) {
       var k = Model.findKey(root.keys, root.recipients[i])
-      if (k && !k.verified) out.push(k)
+      if (k && !k.verified && !k.canDecrypt) out.push(k)
     }
     return out
   }
@@ -128,6 +130,7 @@ Panel {
     if (mode === next) return
     mode = next
     verifyTarget = null
+    panelScroll.contentY = 0
     Qt.callLater(focusMode)
   }
 
@@ -135,6 +138,7 @@ Panel {
     if (!root.opened) return
     if (mode === "read") readInput.focusEditor()
     else if (mode === "write") writeInput.focusEditor()
+    else if (verifyTarget) verifyInput.forceActiveFocus()
     else importInput.focusEditor()
   }
 
@@ -149,7 +153,7 @@ Panel {
     writeInput.clear()
     writeOutputArea.clear()
     importInput.clear()
-    clipboard.dropPayload()
+    clipboard.detachCopy()
     clearReadResult()
     clearWriteResult()
     recipients = []
@@ -167,7 +171,6 @@ Panel {
     readHasResult = false
     readNotice = ""
     copyNotice = ""
-    copyArmed = false
     if (readOutput) readOutput.clear()
   }
 
@@ -176,7 +179,6 @@ Panel {
     writeOutputKind = ""
     writeError = ""
     writeOutputSensitive = false
-    writeCopyArmed = false
     if (writeOutputArea) writeOutputArea.clear()
   }
 
@@ -235,7 +237,9 @@ Panel {
     root.keysLoaded = false
     var pub = ""
     var steps = []
-    steps.push({ args: Model.listKeysArgs(root.homedir, false), use: function(r) { pub = r.stdout } })
+    steps.push({ args: Model.listKeysArgs(root.homedir, false, true),
+                 fallbackArgs: Model.listKeysArgs(root.homedir, false),
+                 use: function(r) { pub = r.stdout } })
     steps.push({ args: Model.listKeysArgs(root.homedir, true), use: function(r) {
       root.keys = Model.parseKeys(pub, r.stdout)
       root.keysLoaded = true
@@ -252,6 +256,13 @@ Panel {
       var step = steps[i++]
       keyList.start(step.args, null, function(r) {
         if (epoch !== root._keyEpoch || !root.opened) return
+        if (step.fallbackArgs && (r.errorCode === "output-limit" || r.errorCode === "timeout")) {
+          step.args = step.fallbackArgs
+          step.fallbackArgs = null
+          i--
+          next()
+          return
+        }
         if (r.errorCode || r.exitCode !== 0) {
           root.keysError = Model.workerFailure(r) || "Could not read the GnuPG keyring" + (root.homedir ? " in " + root.homedir : "") + "."
           if (completed) completed(false)
@@ -308,9 +319,11 @@ Panel {
     if (!keysLoaded) { writeError = "Load the keyring before encrypting."; return }
     if (writeInput.text === "") { writeError = "Write a message first."; return }
     if (recipients.length === 0) { writeError = "Choose at least one recipient."; return }
+    var needsTrustOverride = false
     for (var i = 0; i < recipients.length; i++) {
       var key = Model.findKey(root.keys, recipients[i])
       if (!key || !key.usable || !key.canEncrypt) { writeError = "A selected recipient is no longer available. Choose recipients again."; return }
+      if (key.locallyVerified || (key.canDecrypt && !key.verified)) needsTrustOverride = true
     }
     if (unverifiedRecipients.length > 0 && !allowUnverified) {
       writeError = "Confirm the unverified recipients below, or verify them under Keys."
@@ -322,8 +335,14 @@ Panel {
       return
     }
     var to = recipients.slice()
-    if (encryptToSelf && selfKey && to.indexOf(selfKey.fingerprint) === -1) to.push(selfKey.fingerprint)
-    var request = { revision: _writeRevision, signer: signer, recipients: to.slice(), allowUnverified: allowUnverified }
+    if (encryptToSelf && selfKey) {
+      if (to.indexOf(selfKey.fingerprint) === -1) to.push(selfKey.fingerprint)
+      if (!selfKey.verified) needsTrustOverride = true
+    }
+    // Every recipient has been checked above. A personal key or a locally
+    // certified contact can need a trust override for this request alone.
+    var request = { revision: _writeRevision, signer: signer, recipients: to,
+                    allowUnverified: allowUnverified || needsTrustOverride }
     var args = Model.encryptArgs(root.homedir, request)
     runGpg(args, writeInput.text, function(r) {
       if (request.revision !== root._writeRevision) return
@@ -395,23 +414,36 @@ Panel {
     })
   }
 
-  function verifyKey(key) {
-    if (busy || !key || !key.uid) return
+  function startVerification(key) {
     keysNotice = ""
-    var signWith = signer || (signKeys.length > 0 ? signKeys[0].fingerprint : "")
-    runGpg(Model.lsignArgs(root.homedir, key.fingerprint, signWith, key.uid), null, function(r) {
-      root.verifyTarget = null
+    verifyTarget = key
+    panelScroll.contentY = 0
+    Qt.callLater(function() {
+      if (root.opened && root.verifyTarget === key) verifyInput.forceActiveFocus()
+    })
+  }
+
+  function verifyKey(key) {
+    if (busy || !key || !key.uid || certKeys.length === 0) return
+    if (fingerprintCheck !== "empty" && fingerprintCheck !== "match") return
+    keysNotice = ""
+    var certKey = Model.findKey(certKeys, signer) || certKeys[0]
+    var args = Model.lsignArgs(root.homedir, key.fingerprint, certKey.fingerprint, key.uid)
+    if (!args) { keysNotice = "GnuPG cannot use this contact’s identity for verification."; return }
+    runGpg(args, null, function(r) {
       if (r.exitCode !== 0 || r.errorCode) {
-        root.keysNotice = Model.workerFailure(r) || "Could not verify that identity (cancelled, or your key needs its passphrase)."
+        root.keysNotice = Model.verificationFailure(r)
         root.refreshKeys()
         return
       }
       root.refreshKeys(function(loaded) {
         var refreshedKey = loaded ? Model.findKey(root.keys, key.fingerprint) : null
-        if (Model.isVerifiedUid(refreshedKey, key.uid))
+        if (Model.isVerifiedUid(refreshedKey, key.uid)) {
+          root.verifyTarget = null
           root.keysNotice = key.displayUid + " is now marked as verified on this computer."
-        else
+        } else {
           root.keysNotice = "Could not confirm that this identity was verified."
+        }
       })
     })
   }
@@ -423,21 +455,32 @@ Panel {
   }
 
   function copyPlaintext() {
-    if (!copyArmed) { copyArmed = true; copyArmTimer.restart(); return }
-    copyArmed = false
+    if (readPlaintext === "") return
     copyNotice = ""
-    if (readPlaintext !== "" && !clipboard.copy(readPlaintext, true, copyTimeoutNotice("Copied the decrypted text.")))
+    if (!clipboard.copy(readPlaintext, true, copyTimeoutNotice("Copied the decrypted text.")))
       copyNotice = "Another clipboard operation is still finishing. Try again in a moment."
   }
 
   function copyWriteOutput() {
     if (writeOutput === "") return
-    if (writeOutputSensitive && !writeCopyArmed) { writeCopyArmed = true; copyArmTimer.restart(); return }
-    writeCopyArmed = false
+    copyNotice = ""
     var copied = writeOutputSensitive
       ? clipboard.copy(writeOutput, true, copyTimeoutNotice("Copied the signed message."))
       : clipboard.copy(writeOutput, false, "Copied the encrypted message.")
     if (!copied) copyNotice = "Another clipboard operation is still finishing. Try again in a moment."
+  }
+
+  function copyActiveOutput(repeating) {
+    if (busy) return false
+    if (mode === "read" && readPlaintext !== "") {
+      if (!repeating) copyPlaintext()
+      return true
+    }
+    if (mode === "write" && writeOutput !== "") {
+      if (!repeating) copyWriteOutput()
+      return true
+    }
+    return false
   }
 
   function copyEditorText(text, cut, completed) {
@@ -446,12 +489,6 @@ Panel {
     var notice = copyTimeoutNotice(cut ? "Moved the selection to the clipboard." : "Copied the selection.")
     if (!clipboard.copy(text, true, notice, completed))
       copyNotice = "Another clipboard operation is still finishing. Try again in a moment."
-  }
-
-  Timer {
-    id: copyArmTimer
-    interval: 5000
-    onTriggered: { root.copyArmed = false; root.writeCopyArmed = false }
   }
 
   GpgProcess {
@@ -475,21 +512,16 @@ Panel {
     property var pendingCopy: null
     property string pendingHash: ""
 
-    function dropPayload() {
+    function detachCopy() {
       if (!pendingCopy) return
+      // A requested copy can finish while the user switches to the paste target.
       pendingCopy.completed = null
       pendingCopy.notice = ""
-      // A write already handed to wl-copy still needs its expiry timer.
-      if (copyProc.payload === "") return
-      copyProc.payload = ""
-      pendingCopy = null
-      copyDeadline.stop()
-      if (copyProc.running) copyProc.running = false
     }
 
     function copy(text, sensitive, notice, completed) {
-      if (text === "" || pendingCopy || copyProc.running) return false
-      var request = { hash: sensitive ? Qt.md5(text) : "", notice: notice, completed: completed || null }
+      if (text === "" || pendingCopy || copyProc.running || checkCopyProc.running) return false
+      var request = { hash: Qt.md5(text), sensitive: sensitive, written: false, notice: notice, completed: completed || null }
       pendingCopy = request
       if (override) {
         override(text, sensitive, function(success) {
@@ -498,23 +530,36 @@ Panel {
         return true
       }
       copyProc.payload = text
-      copyProc.command = sensitive ? ["/usr/bin/wl-copy", "--sensitive"] : ["/usr/bin/wl-copy"]
+      // MIME detection can classify armored PGP as binary. Offer it as text
+      // so editors and chat inputs can paste it like any other text.
+      copyProc.command = sensitive
+        ? ["/usr/bin/wl-copy", "--type", "text/plain;charset=utf-8", "--sensitive"]
+        : ["/usr/bin/wl-copy", "--type", "text/plain;charset=utf-8"]
       copyProc.stdinEnabled = true
       copyDeadline.restart()
       copyProc.running = true
       return true
     }
 
-    function finish(success) {
+    function verifyCopy() {
+      if (!pendingCopy) return
+      pendingCopy.written = true
+      checkCopyProc.expectedHash = pendingCopy.hash
+      checkCopyProc.stdinEnabled = true
+      checkCopyProc.running = true
+    }
+
+    function finish(success, failure) {
       var request = pendingCopy
       if (!request) return
       pendingCopy = null
       copyDeadline.stop()
       copyProc.payload = ""
-      if (success) {
+      checkCopyProc.expectedHash = ""
+      if (success || request.written) {
         clearTimer.stop()
         pendingHash = ""
-        if (request.hash && root.copyClearSeconds > 0) {
+        if (request.sensitive && root.copyClearSeconds > 0) {
           pendingHash = request.hash
           clearTimer.interval = root.copyClearSeconds * 1000
           clearTimer.restart()
@@ -522,7 +567,7 @@ Panel {
       }
       if (!request.notice) return
       if (!success) {
-        root.copyNotice = "Could not copy to the clipboard. Is wl-clipboard installed?"
+        root.copyNotice = failure || "Could not copy to the system clipboard. Try Copy again."
       } else if (request.completed && !request.completed()) {
         root.copyNotice = root.copyTimeoutNotice("Copied the selection.")
       } else {
@@ -536,18 +581,38 @@ Panel {
       onTriggered: {
         clipboard.finish(false)
         if (copyProc.running) copyProc.running = false
+        if (checkCopyProc.running) checkCopyProc.running = false
       }
     }
 
     Process {
       id: copyProc
+      objectName: "pgpClipboardWriter"
       property string payload: ""
       onStarted: {
         write(payload)
         payload = ""
         stdinEnabled = false
       }
-      onExited: function(exitCode, exitStatus) { clipboard.finish(exitCode === 0 && exitStatus === 0) }
+      onExited: function(exitCode, exitStatus) {
+        if (exitCode === 0 && exitStatus === 0) clipboard.verifyCopy()
+        else clipboard.finish(false)
+      }
+    }
+
+    Process {
+      id: checkCopyProc
+      property string expectedHash: ""
+      command: ["/usr/bin/bash", "-o", "pipefail", "-c",
+                "IFS= read -r want && have=$(/usr/bin/timeout 3 /usr/bin/wl-paste --type text --no-newline | /usr/bin/md5sum) && [[ ${have%% *} == \"$want\" ]]"]
+      onStarted: {
+        write(expectedHash + "\n")
+        expectedHash = ""
+        stdinEnabled = false
+      }
+      onExited: function(exitCode, exitStatus) {
+        clipboard.finish(exitCode === 0 && exitStatus === 0, "Could not confirm the clipboard contains the copied text. Try Copy again.")
+      }
     }
 
     Timer {
@@ -631,6 +696,8 @@ Panel {
           var forward = event.key === Qt.Key_Tab && !(event.modifiers & Qt.ShiftModifier)
           root.switchPanel(forward ? 1 : -1)
           event.accepted = true
+        } else if (event.matches(StandardKey.Copy)) {
+          event.accepted = root.copyActiveOutput(event.isAutoRepeat)
         } else if (event.modifiers & Qt.ControlModifier) {
           if (event.key === Qt.Key_1) { root.setMode("read"); event.accepted = true }
           else if (event.key === Qt.Key_2) { root.setMode("write"); event.accepted = true }
@@ -639,6 +706,7 @@ Panel {
       }
 
       Flickable {
+        id: panelScroll
         anchors.fill: parent
         contentWidth: width
         contentHeight: content.implicitHeight
@@ -710,6 +778,7 @@ Panel {
               height: Style.space(140)
               placeholderText: "Paste a PGP message or signed text, then press Ctrl+Enter"
               onCopyRequested: function(text, cut, completed) { root.copyEditorText(text, cut, completed) }
+              onCopyWithoutSelectionRequested: root.copyActiveOutput(false)
               onSubmitRequested: root.decrypt()
               onTextChanged: root.invalidateRead()
               onInputRejected: function(message) { root.readError = message }
@@ -788,19 +857,12 @@ Panel {
               visible: root.readPlaintext !== ""
             }
 
-            Row {
-              spacing: Style.spacing.md
+            ActionButton {
               visible: root.readPlaintext !== ""
-              ActionButton {
-                text: root.copyArmed ? "Copy plaintext to clipboard?" : "Copy"
-                iconText: "󰆏"
-                onClicked: root.copyPlaintext()
-              }
-              Caption {
-                anchors.verticalCenter: parent.verticalCenter
-                width: Style.space(300)
-                text: root.copyArmed ? "Other apps and clipboard history can read the clipboard. Click again to copy." : ""
-              }
+              text: "Copy decrypted text"
+              iconText: "󰆏"
+              tooltipText: "Copy this result (Ctrl+C)"
+              onClicked: root.copyPlaintext()
             }
             Caption { width: parent.width; visible: text !== ""; text: root.copyNotice }
           }
@@ -816,6 +878,8 @@ Panel {
               spacing: Style.spacing.lg
 
               MultiSelect {
+                id: recipientPicker
+                objectName: "pgpRecipientPicker"
                 enabled: !root.busy
                 width: (parent.width - parent.spacing) / 2
                 label: "To"
@@ -823,27 +887,23 @@ Panel {
                 noSelectionText: "Choose recipients"
                 emptyText: "No public keys. Import one under Keys."
                 fontFamily: root.fontFamily
-                values: root.recipients
                 options: root.encryptKeys.map(function(k) {
                   return { value: k.fingerprint, label: Model.keyLabel(k),
-                           description: Model.shortFingerprint(k.fingerprint) + " · " + Model.validityLabel(k.uidValidity) }
+                           description: Model.shortFingerprint(k.fingerprint) + " · " + (k.canDecrypt ? "your key" : Model.keyVerificationLabel(k)) }
                 })
-                onChanged: function(values) {
-                  root.recipients = values
-                  root.allowUnverified = false
-                }
+                onChanged: root.allowUnverified = false
               }
 
               Dropdown {
+                id: signingPicker
                 enabled: !root.busy
                 width: (parent.width - parent.spacing) / 2
                 label: "Sign as"
                 fontFamily: root.fontFamily
-                value: root.signer
+                value: ""
                 options: [{ value: "", label: "Don't sign" }].concat(root.signKeys.map(function(k) {
                   return { value: k.fingerprint, label: Model.keyLabel(k) }
                 }))
-                onChanged: function(value) { root.signer = value }
               }
             }
 
@@ -907,6 +967,7 @@ Panel {
               id: writeInput
               objectName: "pgpWriteInput"
               onCopyRequested: function(text, cut, completed) { root.copyEditorText(text, cut, completed) }
+              onCopyWithoutSelectionRequested: root.copyActiveOutput(false)
               enabled: !root.busy
               width: parent.width
               height: Style.space(140)
@@ -929,13 +990,16 @@ Panel {
                 onClicked: root.signOnly()
               }
               ActionButton {
+                text: "Paste"
+                onClicked: writeInput.pasteClipboard()
+              }
+              ActionButton {
                 text: "Clear"
                 onClicked: { writeInput.clear(); writeOutputArea.clear(); root.clearWriteResult(); writeInput.focusEditor() }
               }
             }
 
             Message { width: parent.width; tone: "bad"; text: root.writeError }
-            Caption { width: parent.width; text: root.copyNotice }
 
             Caption {
               width: parent.width
@@ -943,19 +1007,25 @@ Panel {
               text: root.writeOutputKind
             }
 
+            ActionButton {
+              objectName: "pgpCopyWriteResult"
+              visible: root.writeOutput !== ""
+              text: root.writeOutputSensitive ? "Copy signed message" : "Copy PGP message"
+              iconText: "󰆏"
+              tooltipText: "Copy this result (Ctrl+C)"
+              onClicked: root.copyWriteOutput()
+            }
+
+            Caption { width: parent.width; text: root.copyNotice }
+
             PgpTextView {
               id: writeOutputArea
               objectName: "pgpWriteOutput"
               width: parent.width
               height: Style.space(120)
               visible: root.writeOutput !== ""
-            }
-
-            ActionButton {
-              visible: root.writeOutput !== ""
-              text: root.writeCopyArmed ? "Copy signed plaintext to clipboard?" : "Copy"
-              iconText: "󰆏"
-              onClicked: root.copyWriteOutput()
+              selectable: !root.writeOutputSensitive
+              onCopyAllRequested: root.copyWriteOutput()
             }
           }
 
@@ -966,11 +1036,113 @@ Panel {
             visible: root.mode === "keys"
 
             Message { width: parent.width; tone: "bad"; text: root.keysError }
+            Message { width: parent.width; text: root.keysNotice }
 
             Caption {
               width: parent.width
               visible: root.keysLoaded && root.keys.length === 0
               text: "No keys yet. Paste a public key below to import it, or import your own key pair."
+            }
+
+            Caption {
+              width: parent.width
+              visible: root.verifyTarget === null && root.keys.some(function(key) {
+                return !key.hasSecret && !key.verified && key.usable && key.uid !== ""
+              })
+              text: "Select Verify beside a contact to compare their full fingerprint."
+            }
+
+            BorderSurface {
+              objectName: "pgpVerifyCard"
+              width: parent.width
+              visible: root.verifyTarget !== null
+              implicitHeight: verifyCol.implicitHeight + Style.spacing.lg * 2
+              radius: Style.cornerRadius
+              color: "transparent"
+              borderSpec: Border.controlSpec("focus", root.fg, Color.accent)
+
+              Column {
+                id: verifyCol
+                anchors.fill: parent
+                anchors.margins: Style.spacing.lg
+                spacing: Style.spacing.md
+
+                Text {
+                  width: parent.width
+                  textFormat: Text.PlainText
+                  text: root.verifyTarget ? "Verify " + root.verifyTarget.displayUid : ""
+                  wrapMode: Text.Wrap
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.heading
+                  font.bold: true
+                }
+
+                Message {
+                  width: parent.width
+                  text: "Ask your contact for their full fingerprint in person, by phone, or through a channel you already trust."
+                }
+
+                Text {
+                  objectName: "pgpVerificationFingerprint"
+                  width: parent.width
+                  textFormat: Text.PlainText
+                  text: root.verifyTarget ? Model.formatFingerprint(root.verifyTarget.fingerprint) : ""
+                  wrapMode: Text.Wrap
+                  color: root.fg
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.heading
+                  font.bold: true
+                }
+
+                Caption {
+                  width: parent.width
+                  text: "Compare every group above, or paste the fingerprint they gave you."
+                }
+
+                TextField {
+                  id: verifyInput
+                  objectName: "pgpFingerprintInput"
+                  width: parent.width
+                  enabled: !root.busy
+                  maximumLength: 160
+                  placeholderText: "Paste their full fingerprint (optional)"
+                  foreground: root.fg
+                  font.family: root.fontFamily
+                }
+
+                Message {
+                  width: parent.width
+                  tone: root.fingerprintCheck === "match" ? "good" : "bad"
+                  text: {
+                    if (root.fingerprintCheck === "match") return "The fingerprints match."
+                    if (root.fingerprintCheck === "mismatch") return "The fingerprints differ. Check with your contact before verifying."
+                    if (root.fingerprintCheck === "incomplete") return "Enter the full fingerprint, with or without spaces."
+                    return ""
+                  }
+                }
+
+                Caption {
+                  width: parent.width
+                  text: root.keysLoaded && root.certKeys.length === 0
+                    ? "To save verification, import your own private primary key or connect the security key that holds it."
+                    : "Confirm only if the full fingerprint matches. Verification is saved in your local keyring."
+                }
+
+                Row {
+                  spacing: Style.spacing.md
+                  ActionButton {
+                    objectName: "pgpConfirmFingerprint"
+                    enabled: !root.busy && root.certKeys.length > 0 && (root.fingerprintCheck === "empty" || root.fingerprintCheck === "match")
+                    text: "Confirm match and verify"
+                    onClicked: root.verifyKey(root.verifyTarget)
+                  }
+                  ActionButton {
+                    text: "Cancel"
+                    onClicked: root.verifyTarget = null
+                  }
+                }
+              }
             }
 
             ListView {
@@ -981,7 +1153,7 @@ Panel {
               spacing: Style.spacing.sm
               boundsBehavior: Flickable.StopAtBounds
               model: root.keys
-              visible: root.keys.length > 0
+              visible: root.keys.length > 0 && root.verifyTarget === null
 
               delegate: BorderSurface {
                 id: keyRow
@@ -1015,8 +1187,9 @@ Panel {
                   Caption {
                     width: parent.width
                     text: [
-                      keyRow.modelData.hasSecret ? "secret key" : "public key",
-                      Model.validityLabel(keyRow.modelData.usable ? keyRow.modelData.uidValidity : keyRow.modelData.validity),
+                      keyRow.modelData.hasSecret ? "your key" : "public key",
+                      !keyRow.modelData.usable ? Model.validityLabel(keyRow.modelData.validity)
+                        : keyRow.modelData.hasSecret ? "" : Model.keyVerificationLabel(keyRow.modelData),
                       keyRow.modelData.canEncrypt ? "" : "can't encrypt"
                     ].filter(function(s) { return s !== "" }).join(" · ")
                   }
@@ -1024,9 +1197,6 @@ Panel {
                   Caption {
                     width: parent.width
                     text: Model.formatFingerprint(keyRow.modelData.fingerprint)
-                    color: root.verifyTarget && root.verifyTarget.fingerprint === keyRow.modelData.fingerprint ? root.fg : root.dim
-                    font.pixelSize: root.verifyTarget && root.verifyTarget.fingerprint === keyRow.modelData.fingerprint ? Style.font.body : Style.font.caption
-                    font.bold: root.verifyTarget && root.verifyTarget.fingerprint === keyRow.modelData.fingerprint
                   }
                 }
 
@@ -1038,10 +1208,10 @@ Panel {
                   spacing: Style.spacing.sm
 
                   ActionButton {
-                    visible: !keyRow.modelData.hasSecret && !keyRow.modelData.verified && keyRow.modelData.usable && root.signKeys.length > 0
-                    text: "Verify"
-                    tooltipText: "Mark this key as verified after comparing its fingerprint with its owner"
-                    onClicked: root.verifyTarget = keyRow.modelData
+                    visible: !keyRow.modelData.hasSecret && !keyRow.modelData.verified && keyRow.modelData.usable && keyRow.modelData.uid !== ""
+                    text: "Verify…"
+                    tooltipText: "Compare the full fingerprint with this contact"
+                    onClicked: root.startVerification(keyRow.modelData)
                   }
                   ActionButton {
                     iconText: "󰆏"
@@ -1052,58 +1222,11 @@ Panel {
               }
             }
 
-            BorderSurface {
+            Caption {
               width: parent.width
-              visible: root.verifyTarget !== null
-              implicitHeight: verifyCol.implicitHeight + Style.spacing.lg * 2
-              radius: Style.cornerRadius
-              color: "transparent"
-              borderSpec: Border.controlSpec("focus", root.fg, Color.accent)
-
-              Column {
-                id: verifyCol
-                anchors.fill: parent
-                anchors.margins: Style.spacing.lg
-                spacing: Style.spacing.md
-
-                Message {
-                  width: parent.width
-                  text: root.verifyTarget
-                    ? "Ask " + root.verifyTarget.displayUid + " to read their fingerprint to you in person, by phone, or another trusted channel. Only continue if every character matches:"
-                    : ""
-                }
-
-                Text {
-                  width: parent.width
-                  textFormat: Text.PlainText
-                  horizontalAlignment: Text.AlignHCenter
-                  text: root.verifyTarget ? Model.formatFingerprint(root.verifyTarget.fingerprint) : ""
-                  color: root.fg
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.title
-                  font.bold: true
-                }
-
-                Row {
-                  spacing: Style.spacing.md
-                  ActionButton {
-                    text: "It matches: verify"
-                    onClicked: root.verifyKey(root.verifyTarget)
-                  }
-                  ActionButton {
-                    text: "Cancel"
-                    onClicked: root.verifyTarget = null
-                  }
-                }
-
-                Caption {
-                  width: parent.width
-                  text: "This certifies only the displayed identity, with a local signature that is not exported by this plugin."
-                }
-              }
+              visible: root.verifyTarget === null && root.keys.some(function(key) { return key.hasSecret })
+              text: "To help someone verify your key, share its full fingerprint in person, by phone, or through a channel they already trust."
             }
-
-            Message { width: parent.width; text: root.keysNotice }
 
             PanelSectionHeader {
               text: "IMPORT KEYS"
